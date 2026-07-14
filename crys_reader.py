@@ -1,0 +1,659 @@
+import argparse
+import colorsys
+import ctypes
+import difflib
+import json
+import logging
+import os
+import re
+import sys
+from datetime import datetime
+
+import cv2
+import numpy as np
+import pyautogui
+import pytesseract
+from PIL import Image, ImageDraw
+from requests import get
+
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    import keyboard
+    import pydirectinput
+    import pygetwindow
+    import win32api
+    import win32con
+    import win32gui
+    import win32ui
+
+    pydirectinput.FAILSAFE = False
+pyautogui.FAILSAFE = False
+
+
+__version__ = "vDEV"
+
+SLEEP_MULT = 1
+DEBUG = True  # TODO: SET FALSE
+TARGET_WINDOW = "MadokaExedra"
+MOCK_IMAGE = None
+text_locations = {}
+
+
+def take_debug_screencap(title: str | None = None):
+    if title is None:
+        title = "full_screencap"
+    client_left = text_locations["screen"][0]
+    client_top = text_locations["screen"][1]
+    img = grab_region(text_locations["screen"])
+    draw = ImageDraw.Draw(img)
+    for name, coords in text_locations.items():
+        if len(coords) == 4:
+            x1, y1, x2, y2 = coords
+            x1 -= client_left
+            x2 -= client_left
+            y1 -= client_top
+            y2 -= client_top
+            x = (x1 + x2) // 2
+            y = (y1 + y2) // 2
+            colour = "magenta"
+            draw.rectangle((x1, y1, x2, y2), outline=colour, width=5)
+        else:
+            x, y = coords
+            x -= client_left
+            y -= client_top
+            colour = "red"
+            r = 8
+            draw.ellipse((x - r, y - r, x + r, y + r), outline=colour, width=10)
+
+        draw.text((x + 4, y + 4), name, fill=colour)
+    img.save(f"debug/{title}.png")
+
+
+if IS_WINDOWS:
+    keyboard.add_hotkey("ctrl+shift+q", lambda: os._exit(0))
+    keyboard.add_hotkey("ctrl+shift+p", take_debug_screencap)
+
+log_formatter = logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("crys_reader")
+logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+logger.addHandler(console_handler)
+
+
+def check_git_version_match():
+    try:
+        git_version = get(
+            "https://api.github.com/repos/thefrozenfishy/exedra-crys-reader/releases/latest",
+            timeout=10,
+        )
+        if git_version.status_code == 200:
+            data = git_version.json()
+            version = data["tag_name"].lstrip("version-")
+            if f"v{version}" != __version__:
+                logger.warning(
+                    "New version available: v%s, you are on %s", version, __version__
+                )
+                logger.warning(
+                    "Get it on https://github.com/thefrozenfishy/exedra-crys-reader/releases/tag/version-%s",
+                    version,
+                )
+    except Exception as e:
+        logger.error("Failed to get git version")
+
+
+def get_game_window():
+    wins = pygetwindow.getWindowsWithTitle(TARGET_WINDOW)
+    if not wins:
+        raise RuntimeError("Game window not found")
+    return wins[0]
+
+
+def _capture_client(hwnd: int) -> Image.Image:
+    win_left, win_top, win_right, win_bottom = win32gui.GetWindowRect(hwnd)
+    w = win_right - win_left
+    h = win_bottom - win_top
+
+    hwnd_dc = win32gui.GetWindowDC(hwnd)
+    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+    save_dc = mfc_dc.CreateCompatibleDC()
+
+    bmp = win32ui.CreateBitmap()
+    bmp.CreateCompatibleBitmap(mfc_dc, w, h)
+    save_dc.SelectObject(bmp)
+    ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 0x2)
+
+    bmp_info = bmp.GetInfo()
+    raw = bmp.GetBitmapBits(True)
+    full_img = Image.frombuffer(
+        "RGB",
+        (bmp_info["bmWidth"], bmp_info["bmHeight"]),
+        raw,
+        "raw",
+        "BGRX",
+        0,
+        1,
+    )
+
+    win32gui.DeleteObject(bmp.GetHandle())
+    save_dc.DeleteDC()
+    mfc_dc.DeleteDC()
+    win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+    client_left, client_top = win32gui.ClientToScreen(hwnd, (0, 0))
+    client_rect = win32gui.GetClientRect(hwnd)
+    cx = client_left - win_left
+    cy = client_top - win_top
+    cw = client_rect[2]
+    ch = client_rect[3]
+    return full_img.crop((cx, cy, cx + cw, cy + ch))
+
+
+_game_hwnd: int = 0
+_client_left: int = 0
+_client_top: int = 0
+
+
+def grab_region(bbox) -> Image.Image:
+    x1, y1, x2, y2 = bbox
+
+    if MOCK_IMAGE:
+        return MOCK_IMAGE.crop((x1, y1, x2, y2))
+
+    img = _capture_client(_game_hwnd)
+    ox, oy = _client_left, _client_top
+    return img.crop((x1 - ox, y1 - oy, x2 - ox, y2 - oy))
+
+
+def normalize_1_and_0(s: str) -> str:
+    return (
+        s.replace("i", "1")
+        .replace("I", "1")
+        .replace("l", "1")
+        .replace("]", "1")
+        .replace("[", "1")
+        .replace("O", "0")
+        .replace("o", "0")
+    )
+
+
+def get_dpi_scale() -> float:
+    """Return the DPI scale factor (e.g. 1.0, 1.25, 1.5)."""
+    if not IS_WINDOWS:
+        return 1.0
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        return dpi / 96.0
+    except Exception:
+        return 1.0
+
+
+def scroll_up():
+    scroll(-1, *text_locations["crys_set_button"])
+
+
+def scroll_down():
+    scroll(-1, *text_locations["crys_set_button"])
+
+
+def scroll(clicks: int, x: int, y: int):
+    if MOCK_IMAGE:
+        return
+    hwnd = win32gui.FindWindow(None, TARGET_WINDOW)
+    if not hwnd:
+        return
+    prev_hwnd = win32gui.GetForegroundWindow()
+    ctypes.windll.user32.SetForegroundWindow(hwnd)
+    pyautogui.sleep(SLEEP_MULT * 0.02)
+    curr = pyautogui.position()
+    pydirectinput.click(x, y)
+
+    adjusted_delta = int(-120 / DPI_SCALE)
+    if clicks < 0:
+        adjusted_delta *= -1
+        clicks *= -1
+    for _ in range(clicks):
+        win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, adjusted_delta, 0)
+        pyautogui.sleep(SLEEP_MULT * 0.1)
+
+    pyautogui.moveTo(curr)
+    pyautogui.sleep(SLEEP_MULT * 0.02)
+    ctypes.windll.user32.SetForegroundWindow(prev_hwnd)
+
+
+def click_name(name):
+    print(f"CLICKING on {name}")
+    pyautogui.sleep(SLEEP_MULT * 1)
+    click(*text_locations[name])
+
+
+def click(x, y):
+    if not IS_WINDOWS:
+        print(f"CLICKING on ({x}, {y})")
+        take_debug_screencap()
+        return
+    hwnd = win32gui.FindWindow(None, TARGET_WINDOW)
+    if not hwnd:
+        logger.error("Could not find hwnd")
+        return
+
+    prev_hwnd = win32gui.GetForegroundWindow()
+    ctypes.set_last_error(0)
+    result = ctypes.windll.user32.SetForegroundWindow(hwnd)
+    err = ctypes.get_last_error()
+    if err:
+        logger.warning("SetForegroundWindow result=%s err=%s", result, err)
+    pyautogui.sleep(SLEEP_MULT * 0.02)
+    curr = pyautogui.position()
+    pydirectinput.click(int(x), int(y))
+    pyautogui.moveTo(curr)
+    pyautogui.sleep(SLEEP_MULT * 0.02)
+    if prev_hwnd and win32gui.IsWindow(prev_hwnd):
+        ctypes.windll.user32.SetForegroundWindow(prev_hwnd)
+    else:
+        logger.warning(
+            "Previous hwnd %s is not valid, cannot restore foreground", prev_hwnd
+        )
+
+
+def normalize(text: str) -> str:
+    return re.sub(r"\\s+", "", text).lower()
+
+
+def resource_path(relative):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative)
+    return os.path.abspath(relative)
+
+
+def capture_client(hwnd: int) -> Image.Image:
+    if MOCK_IMAGE:
+        return MOCK_IMAGE.copy()
+    wl, wt, wr, wb = win32gui.GetWindowRect(hwnd)
+    w = wr - wl
+    h = wb - wt
+
+    hwnd_dc = win32gui.GetWindowDC(hwnd)
+    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+    save_dc = mfc_dc.CreateCompatibleDC()
+
+    bmp = win32ui.CreateBitmap()
+    bmp.CreateCompatibleBitmap(mfc_dc, w, h)
+    save_dc.SelectObject(bmp)
+
+    ctypes.windll.user32.PrintWindow(
+        hwnd,
+        save_dc.GetSafeHdc(),
+        0x2,
+    )
+
+    bmp_info = bmp.GetInfo()
+    raw = bmp.GetBitmapBits(True)
+
+    full = Image.frombuffer(
+        "RGB",
+        (bmp_info["bmWidth"], bmp_info["bmHeight"]),
+        raw,
+        "raw",
+        "BGRX",
+        0,
+        1,
+    )
+
+    win32gui.DeleteObject(bmp.GetHandle())
+    save_dc.DeleteDC()
+    mfc_dc.DeleteDC()
+    win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+    cl, ct = win32gui.ClientToScreen(hwnd, (0, 0))
+    cr = win32gui.GetClientRect(hwnd)
+
+    ox = cl - wl
+    oy = ct - wt
+
+    return full.crop((ox, oy, ox + cr[2], oy + cr[3]))
+
+
+def prepare_variants(img):
+    arr = np.array(img)
+
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    gray = cv2.resize(
+        gray,
+        None,
+        fx=2,
+        fy=2,
+        interpolation=cv2.INTER_LINEAR,
+    )
+
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    _, bw = cv2.threshold(
+        gray,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+    )
+
+    return [
+        (bw, "bw"),
+        (gray, "gray"),
+    ]
+
+
+def ocr_box(name):
+    img = grab_region(text_locations[name])
+    best = ""
+    for variant, vname in prepare_variants(img):
+        txt = pytesseract.image_to_string(variant, config="--oem 3 --psm 6")
+        txt = re.sub(r"\\s+", " ", txt).strip()
+        if len(txt) > len(best):
+            best = txt
+        if DEBUG:
+            Image.fromarray(variant).save(f"debug/{name}_{vname}.png")
+    return best
+
+
+def fuzzy_match(text, names):
+    norm = normalize(text)
+    normalised = {normalize(x): x for x in names}
+    for n, canonical in normalised.items():
+        if n in norm:
+            return canonical
+
+    match = difflib.get_close_matches(text, names, n=1, cutoff=0.65)
+    if match:
+        return match[0]
+
+    logger.warning("Could not read %s", text)
+    return None
+
+
+def load_names():
+    with open(resource_path("getStyleMst.json"), encoding="utf8") as f:
+        style_names = [s["name"] for s in json.load(f)["payload"]["mstList"]]
+
+    with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
+        crys_names = {s["name"]: s for s in json.load(f)["payload"]["mstList"]}
+
+    return style_names, crys_names
+
+
+def get_color_around_button(name: str) -> float:
+    mid_x, mid_y = text_locations[name]
+    radius = 30
+    colour_img = grab_region(
+        (
+            mid_x - radius,
+            mid_y - radius,
+            mid_x + radius,
+            mid_y + radius,
+        )
+    )
+    arr = np.array(colour_img).astype(float) / 255.0
+    r, g, b, *_ = arr.mean(axis=(0, 1))  # [R, G, B] normalized
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    if DEBUG:
+        os.makedirs("debug/color_radius", exist_ok=True)
+        colour_img.save(
+            f"debug/color_radius/{name}_{h:.2f}_{s:.2f}_{v:.2f}__{r:.2f}_{g:.2f}_{b:.2f}.png"
+        )
+
+    return h
+
+
+def read_sub_crys(is_currently_equipped: bool):
+    pos_text = "top" if is_currently_equipped else "bot"
+    return [
+        x
+        for x in [
+            fuzzy_match(ocr_box(f"subcrys_name_{i}_{pos_text}"), sub_crys_names)
+            for i in range(3)
+        ]
+        if x is not None
+    ]
+
+
+def scan_all_unequipped_crys():
+    x = y = 0
+    crys = {}
+    break_next = False
+    take_debug_screencap("scanStart")
+    while True:
+        print(x, y)
+
+        crys_pos = f"crys_nr_{x}_{y}"
+        h = get_color_around_button(crys_pos)
+        if h > 0.15:
+            if not (x == 0 and y == 0 and break_next is False):
+                print("BREAKING CAusE PuRPLE")
+                break
+        click_name(crys_pos)
+        scroll_up()
+        name = fuzzy_match(ocr_box("crys_name"), crys_names)
+        name = crys_pos  # TODO: Remove
+        if not name:
+            raise AttributeError(
+                "Could not read crys name for %s", ocr_box("crys_name")
+            )
+        if name in crys:
+            break
+        scroll_down()
+        crys[name] = read_sub_crys(False)
+
+        x = (x + 1) % 4
+        y = (y + (x == 0)) % 4
+        if x == 0 and y == 0:
+            if break_next:
+                break
+            scroll(3, *text_locations["crys_nr_2_2"])
+            take_debug_screencap("postScroll")
+            break_next = True
+    return crys
+
+
+result = {}
+
+
+def scan_all_kioku():
+    while True:
+        scroll_up()
+        kioku_name = fuzzy_match(ocr_box("kioku_name"), style_names)
+        kioku_name = "Sacred Gift"  # TODO REMOVE
+        if kioku_name is None:
+            raise AttributeError("Could not read kioku name %s", ocr_box("kioku_name"))
+        if kioku_name in result:
+            return
+        click_name("crys_set_button")
+        result[kioku_name] = scan_all_unequipped_crys()
+
+        # TODO read the 3 equipped crys.
+        #  Filter out blue and purple
+        scroll_up()
+        for i in range(3):
+            click_name(f"equipped_crys_{i}")
+            crys_name = fuzzy_match(ocr_box("crys_name"), crys_names)
+            result[kioku_name][crys_name] = read_sub_crys(True)
+        click_name("crys_return_button")
+        click_name("next_kioku_button")
+
+
+def setup_text_locations_mock():
+    global _client_left, _client_top
+    if not MOCK_IMAGE:
+        return
+    w, h = MOCK_IMAGE.size
+
+    _client_left = 0
+    _client_top = 0
+    text_locations["screen"] = (0, 0, w, h)
+    logger.debug("Mock resolution %dx%d", w, h)
+
+    make_text_locations(0, 0, w, h)
+
+
+def setup_text_locations():
+    global _game_hwnd, _client_left, _client_top
+    if MOCK_IMAGE:
+        setup_text_locations_mock()
+        return
+    if not IS_WINDOWS:
+        raise RuntimeError("Window mode only supported on Windows.")
+
+    win = get_game_window()
+    hwnd = win._hWnd
+    client_rect = win32gui.GetClientRect(hwnd)
+    left_top = win32gui.ClientToScreen(hwnd, (0, 0))
+    right_bottom = win32gui.ClientToScreen(hwnd, (client_rect[2], client_rect[3]))
+    client_left, client_top = left_top
+    client_right, client_bottom = right_bottom
+
+    client_width = client_right - client_left
+    client_height = client_bottom - client_top
+
+    logger.debug("Client area resolution is %dx%d", client_width, client_height)
+
+    _game_hwnd = hwnd
+    _client_left = client_left
+    _client_top = client_top
+    make_text_locations(client_left, client_top, client_width, client_height)
+
+
+def make_text_locations(client_left, client_top, client_width, client_height):
+    text_locations["kioku_name"] = (
+        int(client_left + 0.61 * client_width),
+        int(client_top + 0.16 * client_height),
+        int(client_left + 0.95 * client_width),
+        int(client_top + 0.21 * client_height),
+    )
+    text_locations["crys_name"] = (
+        int(client_left + 0.59 * client_width),
+        int(client_top + 0.18 * client_height),
+        int(client_left + 0.92 * client_width),
+        int(client_top + 0.23 * client_height),
+    )
+    text_locations["crys_set_button"] = (
+        int(client_left + 0.93 * client_width),
+        int(client_top + 0.43 * client_height),
+    )
+    text_locations["next_kioku_button"] = (
+        int(client_left + 0.56 * client_width),
+        int(client_top + 0.5 * client_height),
+    )
+    text_locations["crys_return_button"] = (
+        int(client_left + 0.96 * client_width),
+        int(client_top + 0.05 * client_height),
+    )
+    for x in range(4):
+        for y in range(4):
+            text_locations[f"crys_nr_{x}_{y}"] = (
+                int(client_left + (0.163 + 0.094 * x) * client_width),
+                int(client_top + (0.29 + 0.168 * y) * client_height),
+            )
+
+    for is_bot in (True, False):
+        text_locations[f"subcrys_name_0_{"bot" if is_bot else "top"}"] = (
+            int(client_left + 0.54 * client_width),
+            int(client_top + (0.42 + 0.27 * is_bot) * client_height),
+            int(client_left + 0.75 * client_width),
+            int(client_top + (0.48 + 0.27 * is_bot) * client_height),
+        )
+        text_locations[f"subcrys_name_1_{"bot" if is_bot else "top"}"] = (
+            int(client_left + 0.54 * client_width),
+            int(client_top + (0.48 + 0.27 * is_bot) * client_height),
+            int(client_left + 0.75 * client_width),
+            int(client_top + (0.54 + 0.27 * is_bot) * client_height),
+        )
+        text_locations[f"subcrys_name_2_{"bot" if is_bot else "top"}"] = (
+            int(client_left + 0.76 * client_width),
+            int(client_top + (0.42 + 0.27 * is_bot) * client_height),
+            int(client_left + 0.97 * client_width),
+            int(client_top + (0.48 + 0.27 * is_bot) * client_height),
+        )
+    for i in range(3):
+        text_locations[f"equipped_crys_{i}"] = (
+            int(client_left + 0.05 * client_width),
+            int(client_top + (0.35 + 0.13 * i) * client_height),
+        )
+    text_locations["screen"] = (
+        client_left,
+        client_top,
+        client_left + client_width,
+        client_top + client_height,
+    )
+
+    if DEBUG:
+        take_debug_screencap()
+
+
+def main():
+    logger.info(
+        "Reading all crys and subcrys, let the game be until this terminates naturally. Find the results in 'my_crys.json'"
+    )
+    logger.info("Press Ctrl+Shift+Q to terminate the program.")
+    logger.debug("Current version %s", __version__)
+    check_git_version_match()
+    setup_text_locations()
+    try:
+        scan_all_kioku()
+    except:
+        logger.exception("An issue occured")
+        input("Press enter to close")
+    finally:
+        with open("my_crys.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--target")
+    parser.add_argument("--mock-image")
+
+    args = parser.parse_args()
+
+    custom_target = args.target
+    if custom_target:
+        logger.info("Using custom game name '%s'", custom_target)
+        TARGET_WINDOW = custom_target
+
+    if args.mock_image:
+        MOCK_IMAGE = Image.open(args.mock_image)
+
+    DEBUG = args.debug
+    if DEBUG:
+        os.makedirs("debug/logs", exist_ok=True)
+        file_handler = logging.FileHandler(
+            f"debug/logs/{datetime.today().strftime('%Y-%m-%dT%H-%M-%S')}.txt",
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(log_formatter)
+        logger.addHandler(file_handler)
+
+    DPI_SCALE = get_dpi_scale()
+    logger.debug("DPI scale factor detected: %.2f", DPI_SCALE)
+
+    with open(resource_path("getStyleMstList.json"), encoding="utf8") as f:
+        style_names = [s["name"] for s in json.load(f)["payload"]["mstList"]]
+
+    with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
+        data = json.load(f)["payload"]["mstList"]
+        crys_names = {
+            s["name"]
+            for s in data
+            if s["selectionAbilityType"] == 1 and s["rarity"] > 2
+        }
+        sub_crys_names = {s["name"] for s in data if s["selectionAbilityType"] == 2}
+
+    if not IS_WINDOWS and not MOCK_IMAGE:
+        raise RuntimeError(
+            "On macOS/Linux you must provide " "--mock-image screenshot.png"
+        )
+
+    main()

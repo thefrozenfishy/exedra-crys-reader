@@ -1,0 +1,52 @@
+name: Build and Release EXE
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - getSelectionAbilityMstList.json
+      - getStyleMstList.json
+      - crys_reader.py
+      - requirements.txt
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # - name: Set version in script
+      #   shell: pwsh
+      #   run: |
+      #     $version = "v${{ github.run_number }}"
+      #     (Get-Content crys_reader.py) -replace '__version__ = "vDEV"', "__version__ = `"$version`"" | Set-Content crys_reader.py
+      #
+      # - name: Create tag
+      #   run: |
+      #     git -c user.name="${{ github.actor }}" -c user.email="${{ github.actor }}@users.noreply.github.com" tag -a "version-${{ github.run_number }}" -m "version ${{ github.run_number }}"
+      #     git push origin "version-${{ github.run_number }}"
+
+      - name: Build EXE with PyInstaller
+        run: pyinstaller --add-data "getSelectionAbilityMstList.json:." --add-data "getStyleMstList.json:." --add-data "icon.ico:." --icon=icon.ico --onefile --name "exedra-crys-reader" crys_reader.py
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # tag_name: version-${{ github.run_number }}
+          files: dist/crys_reader.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

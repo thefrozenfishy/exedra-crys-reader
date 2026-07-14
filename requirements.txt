@@ -1,0 +1,10 @@
+pytesseract
+opencv-python
+numpy
+pillow
+pyautogui
+pydirectinput
+pygetwindow
+pyinstaller
+keyboard
+requests
