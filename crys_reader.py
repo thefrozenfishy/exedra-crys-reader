@@ -338,7 +338,7 @@ def prepare_variants(img):
         gray,
         0,
         255,
-        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
 
     return [

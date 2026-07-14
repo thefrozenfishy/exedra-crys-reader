@@ -41,7 +41,7 @@ jobs:
           git push origin "version-${{ github.run_number }}"
 
       - name: Build EXE with PyInstaller
-        run: pyinstaller --add-data "getSelectionAbilityMstList.json:." --add-data "getStyleMstList.json:." --add-data "icon.ico:." --icon=icon.ico --onefile --name "exedra-crys-reader" crys_reader.py
+        run: pyinstaller --add-data "getSelectionAbilityMstList.json:." --add-data "getStyleMstList.json:." --add-data "icon.ico:." --icon=icon.ico --onefile --name "crys_reader" crys_reader.py
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
