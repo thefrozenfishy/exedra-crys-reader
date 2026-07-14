@@ -473,8 +473,6 @@ def scan_all_kioku():
         click_name("crys_set_button")
         result[kioku_name] = scan_all_unequipped_crys()
 
-        # TODO read the 3 equipped crys.
-        #  Filter out blue and purple
         scroll_up()
         for i in range(3):
             click_name(f"equipped_crys_{i}")
