@@ -8,6 +8,7 @@
 ## Usage
 
 - This assumes your game runs in 16:9 aspect ratio. I have not tested on emulator myself so do tell if it doesn't work.
-- Start the exe on any kioku screen![kioku_screen](kioku.png) and it will run until it has mapped all crystalis for all your current characters.
+- Start the exe on any kioku screen, be sure to be on the Crystalis tab when starting the application![kioku_screen](kioku.png)
+- It will run until it has mapped all crystalis for all character in your active filter.
   - **NB:** Be careful to remove filters before running this if you want _all_ characters.
 - Import the resulting file it into [TFF's Exedra Toolbox](https://thefrozenfishy.github.io/exedra-dmg-calc/#/character-crys) to visualize the crystalis.
