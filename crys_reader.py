@@ -41,6 +41,8 @@ text_locations = {}
 
 
 def take_debug_screencap(title: str | None = None):
+    if not DEBUG:
+        return
     if title is None:
         title = "full_screencap"
     client_left = text_locations["screen"][0]
@@ -334,12 +336,7 @@ def prepare_variants(img):
 
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-    _, bw = cv2.threshold(
-        gray,
-        0,
-        255,
-        cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
+    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     return [
         (bw, "bw"),
@@ -586,8 +583,7 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         client_top + client_height,
     )
 
-    if DEBUG:
-        take_debug_screencap()
+    take_debug_screencap()
 
 
 def main():
@@ -624,7 +620,7 @@ if __name__ == "__main__":
     if args.mock_image:
         MOCK_IMAGE = Image.open(args.mock_image)
 
-    DEBUG = args.debug
+    # DEBUG = args.debug # TODO: Bring back
     if DEBUG:
         os.makedirs("debug/logs", exist_ok=True)
         file_handler = logging.FileHandler(
