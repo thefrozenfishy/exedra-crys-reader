@@ -81,7 +81,6 @@ log_formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger("crys_reader")
-logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(log_formatter)
@@ -450,6 +449,7 @@ def scan_all_kioku():
             fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
         )
         click_name("crys_set_button")
+        pyautogui.sleep(1 * SLEEP_MULT)
         result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
 
         equip_order = []
@@ -687,6 +687,7 @@ if __name__ == "__main__":
         MOCK_IMAGE = Image.open(args.mock_image)
 
     DEBUG = args.debug
+    logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
     if DEBUG:
         os.makedirs("debug/logs", exist_ok=True)
         file_handler = logging.FileHandler(
