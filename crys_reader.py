@@ -495,7 +495,9 @@ def choose_result_file():
         logger.warning("Could not parse %s, starting with an empty result", filename)
         loaded = {}
 
-    logger.info("Adding to existing file %s", filename)
+    logger.info(
+        "Adding to existing file %s with %d existing entries", filename, len(loaded)
+    )
     return filename, loaded
 
 
