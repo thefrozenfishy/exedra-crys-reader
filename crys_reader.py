@@ -359,7 +359,7 @@ def fuzzy_match(text, names):
     return None
 
 
-def get_color_around_button(name: str) -> float:
+def is_colour_around_button_purple(name: str) -> bool:
     mid_x, mid_y = text_locations[name]
     radius = 30
     colour_img = grab_region(
@@ -379,7 +379,7 @@ def get_color_around_button(name: str) -> float:
             f"debug/color_radius/{name}_{h:.2f}_{s:.2f}_{v:.2f}__{r:.2f}_{g:.2f}_{b:.2f}.png"
         )
 
-    return h
+    return h > 0.75
 
 
 def read_sub_crys(is_currently_equipped: bool):
@@ -404,8 +404,7 @@ def scan_all_unequipped_crys(has_crys_equipped: bool):
     break_next = False
     while True:
         crys_pos = f"crys_nr_{x}_{y}"
-        h = get_color_around_button(crys_pos)
-        if h > 0.7:
+        if is_colour_around_button_purple(crys_pos):
             break
         click_name(crys_pos)
         scroll_down()
@@ -432,7 +431,6 @@ def scan_all_unequipped_crys(has_crys_equipped: bool):
 
 
 def save_result():
-    logger.info("Saving to my_crys.json")
     with open("my_crys.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False, sort_keys=True)
 
@@ -440,11 +438,13 @@ def save_result():
 def scan_all_kioku():
     click_name("crys_tab")
     scroll_up(20)
-    for i in range(30):
+    while True:
         kioku_name = fuzzy_match(ocr_box("kioku_name"), style_names)
+        logger.debug("Reading %s", kioku_name)
         if kioku_name is None:
             raise AttributeError(f"Could not read kioku name {ocr_box("kioku_name")}")
         if kioku_name in result:
+            logger.info("Came back to %s, terminating", kioku_name)
             return
         has_crys_equipped = (
             fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
@@ -457,8 +457,7 @@ def scan_all_kioku():
             scroll_up()
             for i in range(3):
                 crys_pos = f"equipped_crys_{i}_pos"
-                h = get_color_around_button(crys_pos)
-                if h <= 0.7:
+                if not is_colour_around_button_purple(crys_pos):
                     click_name(crys_pos)
                     crys_name_equipped = fuzzy_match(
                         ocr_box("crys_name_equipped_0"), crys_names
@@ -466,13 +465,8 @@ def scan_all_kioku():
                     if crys_name_equipped is not None:
                         equip_order.append(crys_name_equipped)
                         result[kioku_name][crys_name_equipped] = read_sub_crys(True)
-        result[kioku_name]["meta"] = {"equipOrder": equip_order}
         click_name("crys_return_button")
         click_name("cancel_save_button")
-        click_name("next_kioku_button")
-        print(
-            [1 if x is not None and len(x) else 0 for x in result[kioku_name].values()]
-        )
         logger.info(
             "For %s found %d crys, where %d have substats rolled",
             kioku_name,
@@ -482,6 +476,8 @@ def scan_all_kioku():
                 for x in result[kioku_name].values()
             ),
         )
+        click_name("next_kioku_button")
+        result[kioku_name]["meta"] = {"equipOrder": equip_order}
         save_result()
 
 
@@ -642,7 +638,9 @@ def make_text_locations(client_left, client_top, client_width, client_height):
 
 def main():
     logger.info(
-        "Reading all crys and subcrys, let the game be until this terminates naturally. Find the results in 'my_crys.json'"
+        "Reading all crys and subcrys, let the game be until this terminates naturally. \
+There are potentially hundreds of crys based on your active filter, so this can take a long time. \
+Find the results in 'my_crys.json'"
     )
     logger.info(
         "Press Ctrl+Shift+Q to terminate the program prematurely, kioku already analyzed will be saved to file."
