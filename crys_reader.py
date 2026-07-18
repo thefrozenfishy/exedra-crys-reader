@@ -34,10 +34,11 @@ pyautogui.FAILSAFE = False
 __version__ = "vDEV"
 
 SLEEP_MULT = 1
-DEBUG = True  # TODO: SET FALSE
+DEBUG = False
 TARGET_WINDOW = "MadokaExedra"
 MOCK_IMAGE = None
 text_locations = {}
+result = {}
 
 
 def take_debug_screencap(title: str | None = None):
@@ -171,18 +172,6 @@ def grab_region(bbox) -> Image.Image:
     return img.crop((x1 - ox, y1 - oy, x2 - ox, y2 - oy))
 
 
-def normalize_1_and_0(s: str) -> str:
-    return (
-        s.replace("i", "1")
-        .replace("I", "1")
-        .replace("l", "1")
-        .replace("]", "1")
-        .replace("[", "1")
-        .replace("O", "0")
-        .replace("o", "0")
-    )
-
-
 def get_dpi_scale() -> float:
     """Return the DPI scale factor (e.g. 1.0, 1.25, 1.5)."""
     if not IS_WINDOWS:
@@ -196,12 +185,12 @@ def get_dpi_scale() -> float:
         return 1.0
 
 
-def scroll_up():
-    scroll(-1, *text_locations["crys_set_button"])
+def scroll_up(length=5):
+    scroll(-length, *text_locations["scroll_location"])
 
 
-def scroll_down():
-    scroll(-1, *text_locations["crys_set_button"])
+def scroll_down(length=5):
+    scroll(length, *text_locations["scroll_location"])
 
 
 def scroll(clicks: int, x: int, y: int):
@@ -230,14 +219,12 @@ def scroll(clicks: int, x: int, y: int):
 
 
 def click_name(name):
-    print(f"CLICKING on {name}")
     pyautogui.sleep(SLEEP_MULT * 1)
     click(*text_locations[name])
 
 
 def click(x, y):
     if not IS_WINDOWS:
-        print(f"CLICKING on ({x}, {y})")
         take_debug_screencap()
         return
     hwnd = win32gui.FindWindow(None, TARGET_WINDOW)
@@ -368,18 +355,8 @@ def fuzzy_match(text, names):
     if match:
         return match[0]
 
-    logger.warning("Could not read %s", text)
+    logger.debug("Could not read %s", text)
     return None
-
-
-def load_names():
-    with open(resource_path("getStyleMst.json"), encoding="utf8") as f:
-        style_names = [s["name"] for s in json.load(f)["payload"]["mstList"]]
-
-    with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
-        crys_names = {s["name"]: s for s in json.load(f)["payload"]["mstList"]}
-
-    return style_names, crys_names
 
 
 def get_color_around_button(name: str) -> float:
@@ -406,77 +383,106 @@ def get_color_around_button(name: str) -> float:
 
 
 def read_sub_crys(is_currently_equipped: bool):
-    pos_text = "top" if is_currently_equipped else "bot"
-    return [
-        x
-        for x in [
-            fuzzy_match(ocr_box(f"subcrys_name_{i}_{pos_text}"), sub_crys_names)
-            for i in range(3)
-        ]
-        if x is not None
-    ]
+    pos_text = "equipped" if is_currently_equipped else "unequipped"
+    iters = 5 if is_currently_equipped else 1
+    c0 = None
+    i = 0
+    for i in range(iters):
+        c0 = fuzzy_match(ocr_box(f"subcrys_name_0_{pos_text}_{i}"), sub_crys_names)
+        if c0 is not None:
+            break
+    else:
+        return []
+    c1 = fuzzy_match(ocr_box(f"subcrys_name_1_{pos_text}_{i}"), sub_crys_names)
+    c2 = fuzzy_match(ocr_box(f"subcrys_name_2_{pos_text}_{i}"), sub_crys_names)
+    return [x for x in [c0, c1, c2] if x is not None]
 
 
-def scan_all_unequipped_crys():
+def scan_all_unequipped_crys(has_crys_equipped: bool):
     x = y = 0
     crys = {}
     break_next = False
-    take_debug_screencap("scanStart")
     while True:
-        print(x, y)
-
         crys_pos = f"crys_nr_{x}_{y}"
         h = get_color_around_button(crys_pos)
-        if h > 0.15:
-            if not (x == 0 and y == 0 and break_next is False):
-                print("BREAKING CAusE PuRPLE")
-                break
-        click_name(crys_pos)
-        scroll_up()
-        name = fuzzy_match(ocr_box("crys_name"), crys_names)
-        name = crys_pos  # TODO: Remove
-        if not name:
-            raise AttributeError(
-                "Could not read crys name for %s", ocr_box("crys_name")
-            )
-        if name in crys:
+        if h > 0.7:
             break
+        click_name(crys_pos)
         scroll_down()
-        crys[name] = read_sub_crys(False)
+        for i in range(4 if has_crys_equipped else 0, -1, -1):
+            name = fuzzy_match(
+                ocr_box(f"crys_name_{'un' if has_crys_equipped else ''}equipped_{i}"),
+                crys_names,
+            )
+            if name is not None:
+                break
+        else:
+            name = None
+        if name is not None and name not in crys:
+            crys[name] = read_sub_crys(not has_crys_equipped)
 
         x = (x + 1) % 4
         y = (y + (x == 0)) % 4
         if x == 0 and y == 0:
             if break_next:
                 break
-            scroll(3, *text_locations["crys_nr_2_2"])
-            take_debug_screencap("postScroll")
+            scroll(10, *text_locations["crys_list_scroll"])
             break_next = True
     return crys
 
 
-result = {}
+def save_result():
+    logger.info("Saving to my_crys.json")
+    with open("my_crys.json", "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False, sort_keys=True)
 
 
 def scan_all_kioku():
-    while True:
-        scroll_up()
+    click_name("crys_tab")
+    scroll_up(20)
+    for i in range(30):
         kioku_name = fuzzy_match(ocr_box("kioku_name"), style_names)
-        kioku_name = "Sacred Gift"  # TODO REMOVE
         if kioku_name is None:
-            raise AttributeError("Could not read kioku name %s", ocr_box("kioku_name"))
+            raise AttributeError(f"Could not read kioku name {ocr_box("kioku_name")}")
         if kioku_name in result:
             return
+        has_crys_equipped = (
+            fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
+        )
         click_name("crys_set_button")
-        result[kioku_name] = scan_all_unequipped_crys()
+        result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
 
-        scroll_up()
-        for i in range(3):
-            click_name(f"equipped_crys_{i}")
-            crys_name = fuzzy_match(ocr_box("crys_name"), crys_names)
-            result[kioku_name][crys_name] = read_sub_crys(True)
+        equip_order = []
+        if has_crys_equipped:
+            scroll_up()
+            for i in range(3):
+                crys_pos = f"equipped_crys_{i}_pos"
+                h = get_color_around_button(crys_pos)
+                if h <= 0.7:
+                    click_name(crys_pos)
+                    crys_name_equipped = fuzzy_match(
+                        ocr_box("crys_name_equipped_0"), crys_names
+                    )
+                    if crys_name_equipped is not None:
+                        equip_order.append(crys_name_equipped)
+                        result[kioku_name][crys_name_equipped] = read_sub_crys(True)
+        result[kioku_name]["meta"] = {"equipOrder": equip_order}
         click_name("crys_return_button")
+        click_name("cancel_save_button")
         click_name("next_kioku_button")
+        print(
+            [1 if x is not None and len(x) else 0 for x in result[kioku_name].values()]
+        )
+        logger.info(
+            "For %s found %d crys, where %d have substats rolled",
+            kioku_name,
+            len(result[kioku_name]),
+            sum(
+                1 if x is not None and len(x) else 0
+                for x in result[kioku_name].values()
+            ),
+        )
+        save_result()
 
 
 def setup_text_locations_mock():
@@ -527,15 +533,38 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         int(client_left + 0.95 * client_width),
         int(client_top + 0.21 * client_height),
     )
-    text_locations["crys_name"] = (
+    text_locations["crys_name_equipped_0"] = (
         int(client_left + 0.59 * client_width),
         int(client_top + 0.18 * client_height),
         int(client_left + 0.92 * client_width),
         int(client_top + 0.23 * client_height),
     )
+    for i in range(5):
+        text_locations[f"crys_name_unequipped_{i}"] = (
+            int(client_left + 0.59 * client_width),
+            int(client_top + (0.34 + 0.04 * i) * client_height),
+            int(client_left + 0.92 * client_width),
+            int(client_top + (0.42 + 0.04 * i) * client_height),
+        )
     text_locations["crys_set_button"] = (
         int(client_left + 0.93 * client_width),
         int(client_top + 0.43 * client_height),
+    )
+    text_locations["crys_tab"] = (
+        int(client_left + 0.90 * client_width),
+        int(client_top + 0.30 * client_height),
+    )
+    text_locations["scroll_location"] = (
+        int(client_left + 0.8 * client_width),
+        int(client_top + 0.33 * client_height),
+    )
+    text_locations["crys_list_scroll"] = (
+        int(client_left + 0.5 * client_width),
+        int(client_top + 0.33 * client_height),
+    )
+    text_locations["cancel_save_button"] = (
+        int(client_left + 0.6 * client_width),
+        int(client_top + 0.8 * client_height),
     )
     text_locations["next_kioku_button"] = (
         int(client_left + 0.56 * client_width),
@@ -552,30 +581,55 @@ def make_text_locations(client_left, client_top, client_width, client_height):
                 int(client_top + (0.29 + 0.168 * y) * client_height),
             )
 
-    for is_bot in (True, False):
-        text_locations[f"subcrys_name_0_{"bot" if is_bot else "top"}"] = (
+    for i in range(5):
+        text_locations[f"subcrys_name_0_equipped_{i}"] = (
             int(client_left + 0.54 * client_width),
-            int(client_top + (0.42 + 0.27 * is_bot) * client_height),
+            int(client_top + (0.34 + 0.04 * i) * client_height),
             int(client_left + 0.75 * client_width),
-            int(client_top + (0.48 + 0.27 * is_bot) * client_height),
+            int(client_top + (0.40 + 0.04 * i) * client_height),
         )
-        text_locations[f"subcrys_name_1_{"bot" if is_bot else "top"}"] = (
-            int(client_left + 0.54 * client_width),
-            int(client_top + (0.48 + 0.27 * is_bot) * client_height),
-            int(client_left + 0.75 * client_width),
-            int(client_top + (0.54 + 0.27 * is_bot) * client_height),
-        )
-        text_locations[f"subcrys_name_2_{"bot" if is_bot else "top"}"] = (
+        text_locations[f"subcrys_name_1_equipped_{i}"] = (
             int(client_left + 0.76 * client_width),
-            int(client_top + (0.42 + 0.27 * is_bot) * client_height),
+            int(client_top + (0.34 + 0.04 * i) * client_height),
             int(client_left + 0.97 * client_width),
-            int(client_top + (0.48 + 0.27 * is_bot) * client_height),
+            int(client_top + (0.40 + 0.04 * i) * client_height),
         )
+        text_locations[f"subcrys_name_2_equipped_{i}"] = (
+            int(client_left + 0.54 * client_width),
+            int(client_top + (0.40 + 0.04 * i) * client_height),
+            int(client_left + 0.75 * client_width),
+            int(client_top + (0.46 + 0.04 * i) * client_height),
+        )
+
+    text_locations["subcrys_name_0_unequipped_0"] = (
+        int(client_left + 0.54 * client_width),
+        int(client_top + 0.69 * client_height),
+        int(client_left + 0.75 * client_width),
+        int(client_top + 0.75 * client_height),
+    )
+    text_locations["subcrys_name_1_unequipped_0"] = (
+        int(client_left + 0.76 * client_width),
+        int(client_top + 0.69 * client_height),
+        int(client_left + 0.97 * client_width),
+        int(client_top + 0.75 * client_height),
+    )
+    text_locations["subcrys_name_2_unequipped_0"] = (
+        int(client_left + 0.54 * client_width),
+        int(client_top + 0.75 * client_height),
+        int(client_left + 0.75 * client_width),
+        int(client_top + 0.81 * client_height),
+    )
     for i in range(3):
-        text_locations[f"equipped_crys_{i}"] = (
+        text_locations[f"equipped_crys_{i}_pos"] = (
             int(client_left + 0.05 * client_width),
             int(client_top + (0.35 + 0.13 * i) * client_height),
         )
+    text_locations["topside_crys_0_name"] = (
+        int(client_left + 0.68 * client_width),
+        int(client_top + 0.42 * client_height),
+        int(client_left + 0.88 * client_width),
+        int(client_top + 0.48 * client_height),
+    )
     text_locations["screen"] = (
         client_left,
         client_top,
@@ -590,18 +644,32 @@ def main():
     logger.info(
         "Reading all crys and subcrys, let the game be until this terminates naturally. Find the results in 'my_crys.json'"
     )
-    logger.info("Press Ctrl+Shift+Q to terminate the program.")
+    logger.info(
+        "Press Ctrl+Shift+Q to terminate the program prematurely, kioku already analyzed will be saved to file."
+    )
     logger.debug("Current version %s", __version__)
     check_git_version_match()
     setup_text_locations()
     try:
         scan_all_kioku()
-    except:
+    except Exception:
         logger.exception("An issue occured")
-        input("Press enter to close")
+        input(
+            "Press enter to close, all crys that was discovered will be written to my_crys.json"
+        )
     finally:
-        with open("my_crys.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2, ensure_ascii=False)
+        save_result()
+
+
+with open(resource_path("getStyleMstList.json"), encoding="utf8") as f:
+    style_names = [s["name"] for s in json.load(f)["payload"]["mstList"]]
+
+with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
+    data = json.load(f)["payload"]["mstList"]
+    crys_names = {
+        s["name"] for s in data if s["selectionAbilityType"] == 1 and s["rarity"] > 2
+    }
+    sub_crys_names = {s["name"] for s in data if s["selectionAbilityType"] == 2}
 
 
 if __name__ == "__main__":
@@ -620,7 +688,7 @@ if __name__ == "__main__":
     if args.mock_image:
         MOCK_IMAGE = Image.open(args.mock_image)
 
-    # DEBUG = args.debug # TODO: Bring back
+    DEBUG = args.debug
     if DEBUG:
         os.makedirs("debug/logs", exist_ok=True)
         file_handler = logging.FileHandler(
@@ -632,18 +700,6 @@ if __name__ == "__main__":
 
     DPI_SCALE = get_dpi_scale()
     logger.debug("DPI scale factor detected: %.2f", DPI_SCALE)
-
-    with open(resource_path("getStyleMstList.json"), encoding="utf8") as f:
-        style_names = [s["name"] for s in json.load(f)["payload"]["mstList"]]
-
-    with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
-        data = json.load(f)["payload"]["mstList"]
-        crys_names = {
-            s["name"]
-            for s in data
-            if s["selectionAbilityType"] == 1 and s["rarity"] > 2
-        }
-        sub_crys_names = {s["name"] for s in data if s["selectionAbilityType"] == 2}
 
     if not IS_WINDOWS and not MOCK_IMAGE:
         raise RuntimeError(
