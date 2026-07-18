@@ -4,6 +4,6 @@ build/
 debug/
 dist/
 crys_reader.spec
-my_crys.json
+my_crys*.json
 requirements_mac.txt
 screenshots/ 

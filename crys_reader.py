@@ -2,6 +2,7 @@ import argparse
 import colorsys
 import ctypes
 import difflib
+import glob
 import json
 import logging
 import os
@@ -39,6 +40,7 @@ TARGET_WINDOW = "MadokaExedra"
 MOCK_IMAGE = None
 text_locations = {}
 result = {}
+RESULT_FILE = "my_crys.json"
 
 
 def take_debug_screencap(title: str | None = None):
@@ -429,9 +431,80 @@ def scan_all_unequipped_crys(has_crys_equipped: bool):
     return crys
 
 
+CRYS_FILE_PATTERN = re.compile(r"^my_crys(?:_(\d+))?\.json$")
+
+
+def find_crys_files():
+    found = []
+    for path in glob.glob("my_crys*.json"):
+        match = CRYS_FILE_PATTERN.match(os.path.basename(path))
+        if not match:
+            continue
+        number = int(match.group(1)) if match.group(1) else 1
+        found.append((number, path))
+    found.sort(key=lambda pair: pair[0])
+    return found
+
+
+def next_new_filename(existing):
+    if not existing:
+        return "my_crys.json"
+    highest = max(number for number, _ in existing)
+    return f"my_crys_{highest + 1}.json"
+
+
+def choose_result_file():
+    existing = find_crys_files()
+
+    if not existing:
+        filename = "my_crys.json"
+        logger.info("No old file found, creating new %s", filename)
+        return filename, {}
+
+    new_filename = next_new_filename(existing)
+
+    print("""Found existing crys file(s). 
+    If you select an old file you will add new characters to that list, while skipping characters already added.
+    Which one do you want to use?""")
+    print(f"  1. New file (will be saved as {new_filename})")
+    for i, (_, path) in enumerate(existing, start=2):
+        print(f"  {i}. {path}")
+
+    max_choice = len(existing) + 1
+    while True:
+        raw = input(f"Enter a number 1-{max_choice} [default 1]: ").strip()
+        if raw == "":
+            choice = 1
+            break
+        if raw.isdigit() and 1 <= int(raw) <= max_choice:
+            choice = int(raw)
+            break
+        print(f"Please enter a number between 1 and {max_choice}, or just press enter.")
+
+    if choice == 1:
+        logger.info("Creating new file %s", new_filename)
+        return new_filename, {}
+
+    filename = existing[choice - 2][1]
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("Root of %s is not an object" % filename)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("Could not parse %s, starting with an empty result", filename)
+        loaded = {}
+
+    logger.info("Adding to existing file %s", filename)
+    return filename, loaded
+
+
 def save_result():
-    with open("my_crys.json", "w", encoding="utf-8") as f:
+    with open(RESULT_FILE, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False, sort_keys=True)
+
+
+seen_this_run = set()
 
 
 def scan_all_kioku():
@@ -442,43 +515,47 @@ def scan_all_kioku():
         logger.debug("Reading %s", kioku_name)
         if kioku_name is None:
             raise AttributeError(f"Could not read kioku name {ocr_box("kioku_name")}")
-        if kioku_name in result:
+        if kioku_name in seen_this_run:
             logger.info("Came back to %s, terminating", kioku_name)
             return
-        has_crys_equipped = (
-            fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
-        )
-        click_name("crys_set_button")
-        pyautogui.sleep(1 * SLEEP_MULT)
-        result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
+        seen_this_run.add(kioku_name)
+        if kioku_name in result:
+            logger.info("%s already exists in %s, skipping", kioku_name, RESULT_FILE)
+        else:
+            has_crys_equipped = (
+                fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
+            )
+            click_name("crys_set_button")
+            pyautogui.sleep(1 * SLEEP_MULT)
+            result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
 
-        equip_order = []
-        if has_crys_equipped:
-            scroll_up()
-            for i in range(3):
-                crys_pos = f"equipped_crys_{i}_pos"
-                if not is_colour_around_button_purple(crys_pos):
-                    click_name(crys_pos)
-                    crys_name_equipped = fuzzy_match(
-                        ocr_box("crys_name_equipped_0"), crys_names
-                    )
-                    if crys_name_equipped is not None:
-                        equip_order.append(crys_name_equipped)
-                        result[kioku_name][crys_name_equipped] = read_sub_crys(True)
-        click_name("crys_return_button")
-        click_name("cancel_save_button")
-        logger.info(
-            "For %s found %d crys, where %d have substats rolled",
-            kioku_name,
-            len(result[kioku_name]),
-            sum(
-                1 if x is not None and len(x) else 0
-                for x in result[kioku_name].values()
-            ),
-        )
+            equip_order = []
+            if has_crys_equipped:
+                scroll_up()
+                for i in range(3):
+                    crys_pos = f"equipped_crys_{i}_pos"
+                    if not is_colour_around_button_purple(crys_pos):
+                        click_name(crys_pos)
+                        crys_name_equipped = fuzzy_match(
+                            ocr_box("crys_name_equipped_0"), crys_names
+                        )
+                        if crys_name_equipped is not None:
+                            equip_order.append(crys_name_equipped)
+                            result[kioku_name][crys_name_equipped] = read_sub_crys(True)
+            click_name("crys_return_button")
+            click_name("cancel_save_button")
+            logger.info(
+                "For %s found %d crys, where %d have substats rolled",
+                kioku_name,
+                len(result[kioku_name]),
+                sum(
+                    1 if x is not None and len(x) else 0
+                    for x in result[kioku_name].values()
+                ),
+            )
+            result[kioku_name]["meta"] = {"equipOrder": equip_order}
+            save_result()
         click_name("next_kioku_button")
-        result[kioku_name]["meta"] = {"equipOrder": equip_order}
-        save_result()
 
 
 def setup_text_locations_mock():
@@ -637,10 +714,11 @@ def make_text_locations(client_left, client_top, client_width, client_height):
 
 
 def main():
+    global RESULT_FILE, result
     logger.info(
-        "Reading all crys and subcrys, let the game be until this terminates naturally. \
-There are potentially hundreds of crys based on your active filter, so this can take a long time. \
-Find the results in 'my_crys.json'"
+        """Reading all crys and subcrys, let the game be until this terminates naturally.
+    There are potentially hundreds or thousands of crys based on your active filter,
+    so this can take a long time (ca 4 sec per crys / up to 2 min per kioku)."""
     )
     logger.info(
         "Press Ctrl+Shift+Q to terminate the program prematurely, kioku already analyzed will be saved to file."
@@ -648,12 +726,13 @@ Find the results in 'my_crys.json'"
     logger.debug("Current version %s", __version__)
     check_git_version_match()
     setup_text_locations()
+    RESULT_FILE, result = choose_result_file()
     try:
         scan_all_kioku()
     except Exception:
         logger.exception("An issue occured")
         input(
-            "Press enter to close, all crys that was discovered will be written to my_crys.json"
+            f"Press enter to close, all crys that was discovered will be written to {RESULT_FILE}"
         )
     finally:
         save_result()
