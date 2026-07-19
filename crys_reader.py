@@ -581,7 +581,10 @@ def scan_all_kioku():
                     for x in result[kioku_name].values()
                 ),
             )
-            result[kioku_name]["meta"] = {"equipOrder": equip_order}
+            result[kioku_name]["meta"] = {
+                "equipOrder": equip_order,
+                "version": __version__,
+            }
             save_result()
         click_name("next_kioku_button")
         pyautogui.sleep(1 * SLEEP_MULT)
