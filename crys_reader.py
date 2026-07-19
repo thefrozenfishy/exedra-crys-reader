@@ -360,9 +360,8 @@ def fuzzy_match(text, names):
     return None
 
 
-def is_colour_around_button_purple(name: str) -> bool:
+def is_colour_around_button_purple(name: str, radius=30) -> tuple[bool, bool]:
     mid_x, mid_y = text_locations[name]
-    radius = 30
     colour_img = grab_region(
         (
             mid_x - radius,
@@ -380,7 +379,20 @@ def is_colour_around_button_purple(name: str) -> bool:
             f"debug/color_radius/{name}_{h:.2f}_{s:.2f}_{v:.2f}__{r:.2f}_{g:.2f}_{b:.2f}.png"
         )
 
-    return h > 0.75
+    is_purple = h > 0.75
+    is_muted = s < 0.50
+    logger.debug(
+        "HSV> %.2f, %.2f, %.2f, %.2f, %.2f, %.2f gave %s & %s",
+        h,
+        s,
+        v,
+        r,
+        g,
+        b,
+        is_purple,
+        is_muted,
+    )
+    return is_purple, is_muted
 
 
 def read_sub_crys(is_currently_equipped: bool):
@@ -405,8 +417,14 @@ def scan_all_unequipped_crys(has_crys_equipped: bool):
     break_next = False
     while True:
         crys_pos = f"crys_nr_{x}_{y}"
-        if is_colour_around_button_purple(crys_pos):
+        is_purple, is_muted = is_colour_around_button_purple(crys_pos)
+        if is_purple:
             break
+        eq_idx = 0
+        while is_muted and eq_idx < 3:
+            click_name(f"equipped_crys_{eq_idx}_pos")
+            is_purple, is_muted = is_colour_around_button_purple(crys_pos)
+            eq_idx += 1
         click_name(crys_pos)
         scroll_down()
         for i in range(4 if has_crys_equipped else 0, -1, -1):
@@ -428,6 +446,9 @@ def scan_all_unequipped_crys(has_crys_equipped: bool):
                 break
             scroll(10, *text_locations["crys_list_scroll"])
             break_next = True
+        if eq_idx != 0:
+            # Reset to top of we click down so that we dont shuffle equips around forever
+            click_name(f"equipped_crys_0_pos")
     return crys
 
 
@@ -536,14 +557,19 @@ def scan_all_kioku():
                 scroll_up()
                 for i in range(3):
                     crys_pos = f"equipped_crys_{i}_pos"
-                    if not is_colour_around_button_purple(crys_pos):
-                        click_name(crys_pos)
+                    click_name(crys_pos)
+                    is_purple, _ = is_colour_around_button_purple(
+                        "equipped_icon", radius=15
+                    )
+                    eq_name = None
+                    if not is_purple:
                         crys_name_equipped = fuzzy_match(
                             ocr_box("crys_name_equipped_0"), crys_names
                         )
                         if crys_name_equipped is not None:
-                            equip_order.append(crys_name_equipped)
+                            eq_name = crys_name_equipped
                             result[kioku_name][crys_name_equipped] = read_sub_crys(True)
+                    equip_order.append(eq_name)
             click_name("crys_return_button")
             click_name("cancel_save_button")
             logger.info(
@@ -558,6 +584,7 @@ def scan_all_kioku():
             result[kioku_name]["meta"] = {"equipOrder": equip_order}
             save_result()
         click_name("next_kioku_button")
+        pyautogui.sleep(1 * SLEEP_MULT)
 
 
 def setup_text_locations_mock():
@@ -704,6 +731,10 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         int(client_top + 0.42 * client_height),
         int(client_left + 0.88 * client_width),
         int(client_top + 0.48 * client_height),
+    )
+    text_locations["equipped_icon"] = (
+        int(client_left + 0.56 * client_width),
+        int(client_top + 0.185 * client_height),
     )
     text_locations["screen"] = (
         client_left,
