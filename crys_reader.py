@@ -360,14 +360,19 @@ def fuzzy_match(text, names):
     return None
 
 
-def is_colour_around_button_purple(name: str, radius=30) -> tuple[bool, bool]:
+ICON_SIZE = 0
+
+
+def is_colour_around_button_purple(
+    name: str, icon_scale: float = 1
+) -> tuple[bool, bool]:
     mid_x, mid_y = text_locations[name]
     colour_img = grab_region(
         (
-            mid_x - radius,
-            mid_y - radius,
-            mid_x + radius,
-            mid_y + radius,
+            mid_x - int(ICON_SIZE * icon_scale),
+            mid_y - int(ICON_SIZE * icon_scale),
+            mid_x + int(ICON_SIZE * icon_scale),
+            mid_y + int(ICON_SIZE * icon_scale),
         )
     )
     arr = np.array(colour_img).astype(float) / 255.0
@@ -559,7 +564,7 @@ def scan_all_kioku():
                     crys_pos = f"equipped_crys_{i}_pos"
                     click_name(crys_pos)
                     is_purple, _ = is_colour_around_button_purple(
-                        "equipped_icon", radius=15
+                        "equipped_icon", icon_scale=0.5
                     )
                     eq_name = None
                     if not is_purple:
@@ -605,7 +610,7 @@ def setup_text_locations_mock():
 
 
 def setup_text_locations():
-    global _game_hwnd, _client_left, _client_top
+    global _game_hwnd, _client_left, _client_top, ICON_SIZE
     if MOCK_IMAGE:
         setup_text_locations_mock()
         return
@@ -628,6 +633,8 @@ def setup_text_locations():
     _game_hwnd = hwnd
     _client_left = client_left
     _client_top = client_top
+
+    ICON_SIZE = client_width // 34
     make_text_locations(client_left, client_top, client_width, client_height)
 
 
