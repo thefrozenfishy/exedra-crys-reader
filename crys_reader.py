@@ -783,13 +783,16 @@ def main():
 
 with open(resource_path("getStyleMstList.json"), encoding="utf8") as f:
     style_names = [s["name"] for s in json.load(f)["payload"]["mstList"]]
+    style_names = sorted(style_names, key=len, reverse=True)
 
 with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
     data = json.load(f)["payload"]["mstList"]
     crys_names = {
         s["name"] for s in data if s["selectionAbilityType"] == 1 and s["rarity"] > 2
     }
+    crys_names = sorted(crys_names, key=len, reverse=True)
     sub_crys_names = {s["name"] for s in data if s["selectionAbilityType"] == 2}
+    sub_crys_names = sorted(sub_crys_names, key=len, reverse=True)
 
 
 if __name__ == "__main__":
