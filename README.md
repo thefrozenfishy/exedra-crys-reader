@@ -3,7 +3,7 @@
 ## Requires
 
 - [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) installed and [added to PATH](https://gist.github.com/ScribbleGhost/752ec213b57eef5f232053e04f9d0d54). Then restart your computer![var example](images/path_var_example.png)![path example](images/path_example.png)
-- Download the exe file of this tool from [releases](https://github.com/thefrozenfishy/crys_reader/releases)
+- Download the exe file of this tool from [releases](https://github.com/thefrozenfishy/exedra-crys-reader/releases)
 
 ## Usage
 
