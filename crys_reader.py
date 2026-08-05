@@ -36,6 +36,8 @@ __version__ = "vDEV"
 
 SLEEP_MULT = 1
 DEBUG = False
+AUTO_MODE = False
+FILENAME = None
 TARGET_WINDOW = "MadokaExedra"
 MOCK_IMAGE = None
 text_locations = {}
@@ -489,6 +491,14 @@ def choose_result_file():
 
     new_filename = next_new_filename(existing)
 
+    if AUTO_MODE:
+        logger.info("Auto mode enabled")
+        if FILENAME:
+            logger.info("Using filename %s", FILENAME)
+            return FILENAME, {}
+        logger.info("Defaulting to new file %s", new_filename)
+        return new_filename
+
     print("""Found existing crys file(s). 
     If you select an old file you will add new characters to that list, while skipping characters already added.
     Which one do you want to use?""")
@@ -772,8 +782,10 @@ def main():
     RESULT_FILE, result = choose_result_file()
     try:
         scan_all_kioku()
-    except Exception:
+    except Exception as e:
         logger.exception("An issue occured")
+        if AUTO_MODE:
+            raise e
         input(
             f"Press enter to close, all crys that was discovered will be written to {RESULT_FILE}"
         )
@@ -800,8 +812,15 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--target")
     parser.add_argument("--mock-image")
+    parser.add_argument("--auto", action="store_true")
+    parser.add_argument("--filename")
 
     args = parser.parse_args()
+
+    AUTO_MODE = args.auto
+    FILENAME = args.filename
+    if FILENAME and not FILENAME.endswith(".txt"):
+        FILENAME += ".txt"
 
     custom_target = args.target
     if custom_target:
