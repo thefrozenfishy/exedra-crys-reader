@@ -483,12 +483,6 @@ def next_new_filename(existing):
 
 def choose_result_file():
     existing = find_crys_files()
-
-    if not existing:
-        filename = "my_crys.json"
-        logger.info("No old file found, creating new %s", filename)
-        return filename, {}
-
     new_filename = next_new_filename(existing)
 
     if AUTO_MODE:
@@ -497,7 +491,11 @@ def choose_result_file():
             logger.info("Using filename %s", FILENAME)
             return FILENAME, {}
         logger.info("Defaulting to new file %s", new_filename)
-        return new_filename
+        return new_filename, {}
+
+    if not existing:
+        logger.info("No old file found, creating new %s", new_filename)
+        return new_filename, {}
 
     print("""Found existing crys file(s). 
     If you select an old file you will add new characters to that list, while skipping characters already added.
