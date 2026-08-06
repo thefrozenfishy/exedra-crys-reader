@@ -817,8 +817,8 @@ if __name__ == "__main__":
 
     AUTO_MODE = args.auto
     FILENAME = args.filename
-    if FILENAME and not FILENAME.endswith(".txt"):
-        FILENAME += ".txt"
+    if FILENAME and not FILENAME.endswith(".json"):
+        FILENAME += ".json"
 
     custom_target = args.target
     if custom_target:
