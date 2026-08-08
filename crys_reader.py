@@ -584,6 +584,7 @@ def scan_all_kioku():
                             result[kioku_name][crys_name_equipped] = read_sub_crys(True)
                     equip_order.append(eq_name)
             click_name("crys_return_button")
+            pyautogui.sleep(SLEEP_MULT * 4)
             click_name("cancel_save_button")
             logger.info(
                 "For %s found %d crys, where %d have substats rolled",
