@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import pyautogui
 import pytesseract
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from requests import get
 
 IS_WINDOWS = sys.platform == "win32"
@@ -349,7 +349,7 @@ def prepare_variants(img):
     ]
 
 
-def ocr_current_stat(name, brightness_thresh=190, gap_frac=0.6, pad=8):
+def ocr_current_stat(name, brightness_thresh=190, gap_frac=0.6, pad=8, blur_radius=2.5):
     img = grab_region(text_locations[name]).convert("RGB")
     arr = np.array(img)
 
@@ -379,6 +379,7 @@ def ocr_current_stat(name, brightness_thresh=190, gap_frac=0.6, pad=8):
 
     big = Image.fromarray(255 - padded)
     big = big.resize((big.width * 8, big.height * 8), Image.LANCZOS)
+    big = big.filter(ImageFilter.GaussianBlur(blur_radius))
 
     if DEBUG:
         big.save(f"debug/{name}_isolated.png")
