@@ -112,6 +112,21 @@ def check_git_version_match():
         logger.error("Failed to get git version")
 
 
+def fetch_last_styles():
+    try:
+        style_response = get(
+            "https://raw.githubusercontent.com/thefrozenfishy/exedra-dmg-calc/refs/heads/main/src/assets/base_data/getStyleMstList.json",
+            timeout=10,
+        )
+        style_response.raise_for_status()
+        style_data = style_response.json()
+        return style_data
+    except Exception:
+        logger.exception("Failed to get git version")
+    with open(resource_path("getStyleMstList.json"), encoding="utf8") as f:
+        return json.load(f)["payload"]["mstList"]
+
+
 def get_game_window():
     wins = pygetwindow.getWindowsWithTitle(TARGET_WINDOW)
     if not wins:
@@ -412,8 +427,8 @@ def is_colour_around_button_purple(
             f"debug/color_radius/{name}_{h:.2f}_{s:.2f}_{v:.2f}__{r:.2f}_{g:.2f}_{b:.2f}.png"
         )
 
-    is_purple = h > 0.75
-    is_muted = s < 0.50
+    is_purple = bool(h > 0.75)
+    is_muted = bool(s < 0.50)
     logger.debug(
         "HSV> %.2f, %.2f, %.2f, %.2f, %.2f, %.2f gave %s & %s",
         h,
@@ -576,7 +591,8 @@ def scan_all_kioku():
         kioku_name = fuzzy_match(ocr_box("kioku_name"), style_names)
         logger.debug("Reading %s", kioku_name)
         if kioku_name is None:
-            raise AttributeError(f"Could not read kioku name {ocr_box("kioku_name")}")
+            logger.error("Could not read kioku name %s", ocr_box("kioku_name"))
+            continue
         if kioku_name in seen_this_run:
             logger.info("Came back to %s, terminating", kioku_name)
             return
@@ -620,21 +636,29 @@ def scan_all_kioku():
             click_name("kioku_tab")
             kioku_level = get_nrs_in_img("kioku_level")
             magic_level = get_nrs_in_img("magic_level")
+            ascension = sum(
+                not is_colour_around_button_purple(f"ascension_nr_{i}", icon_scale=0.2)[
+                    0
+                ]
+                for i in range(5)
+            )
             click_name("crys_tab")
             logger.info(
-                "For %s found %d crys, where %d have substats rolled. Kioku lvl %s, Magic lvl %s, and Special lvl %s",
+                "For %s found %d crys, where %d have substats rolled. Ascension %s, Kioku lvl %s, Magic lvl %s, and Special lvl %s",
                 kioku_name,
                 len(result[kioku_name]),
                 sum(
                     1 if x is not None and len(x) else 0
                     for x in result[kioku_name].values()
                 ),
+                ascension,
                 kioku_level,
                 magic_level,
                 special_level,
             )
             result[kioku_name]["meta"] = {
                 "equipOrder": equip_order,
+                "ascension": ascension,
                 "kiokuLevel": kioku_level,
                 "magicLevel": magic_level,
                 "specialLevel": special_level,
@@ -822,6 +846,11 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         int(client_left + 0.56 * client_width),
         int(client_top + 0.185 * client_height),
     )
+    for i in range(5):
+        text_locations[f"ascension_nr_{i}"] = (
+            int(client_left + (0.658 + 0.026 * i) * client_width),
+            int(client_top + 0.471 * client_height),
+        )
     text_locations["screen"] = (
         client_left,
         client_top,
@@ -852,25 +881,8 @@ def main():
         logger.exception("An issue occured")
         if AUTO_MODE:
             raise e
-        input(
-            f"Press enter to close, all crys that was discovered will be written to {RESULT_FILE}"
-        )
     finally:
         save_result()
-
-
-with open(resource_path("getStyleMstList.json"), encoding="utf8") as f:
-    style_names = [s["name"] for s in json.load(f)["payload"]["mstList"]]
-    style_names = sorted(style_names, key=len, reverse=True)
-
-with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
-    data = json.load(f)["payload"]["mstList"]
-    crys_names = {
-        s["name"] for s in data if s["selectionAbilityType"] == 1 and s["rarity"] > 2
-    }
-    crys_names = sorted(crys_names, key=len, reverse=True)
-    sub_crys_names = {s["name"] for s in data if s["selectionAbilityType"] == 2}
-    sub_crys_names = sorted(sub_crys_names, key=len, reverse=True)
 
 
 if __name__ == "__main__":
@@ -909,6 +921,21 @@ if __name__ == "__main__":
 
     DPI_SCALE = get_dpi_scale()
     logger.debug("DPI scale factor detected: %.2f", DPI_SCALE)
+
+    style_names = [s["name"] for s in fetch_last_styles() if s["styleMstId"] > 10_000]
+    style_names = sorted(style_names, key=len, reverse=True)
+    logger.debug("Loaded %d style names", len(style_names))
+
+    with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
+        data = json.load(f)["payload"]["mstList"]
+        crys_names = {
+            s["name"]
+            for s in data
+            if s["selectionAbilityType"] == 1 and s["rarity"] > 2
+        }
+        crys_names = sorted(crys_names, key=len, reverse=True)
+        sub_crys_names = {s["name"] for s in data if s["selectionAbilityType"] == 2}
+        sub_crys_names = sorted(sub_crys_names, key=len, reverse=True)
 
     if not IS_WINDOWS and not MOCK_IMAGE:
         raise RuntimeError(
