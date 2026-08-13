@@ -349,6 +349,45 @@ def prepare_variants(img):
     ]
 
 
+def ocr_current_stat(name, brightness_thresh=190, gap_frac=0.6, pad=8):
+    img = grab_region(text_locations[name]).convert("RGB")
+    arr = np.array(img)
+
+    brightness = arr.max(axis=2)
+    mask = (brightness >= brightness_thresh).astype(np.uint8) * 255
+
+    cols = np.where(mask.any(axis=0))[0]
+    if len(cols) == 0:
+        return None
+
+    runs = []
+    start = prev = cols[0]
+    gap = max(10, int(mask.shape[0] * gap_frac))
+    for c in cols[1:]:
+        if c - prev > gap:
+            runs.append((start, prev))
+            start = c
+        prev = c
+    runs.append((start, prev))
+    left, right = runs[0]
+    clean = mask[:, left : right + 1]
+
+    padded = np.zeros(
+        (clean.shape[0] + 2 * pad, clean.shape[1] + 2 * pad), dtype=np.uint8
+    )
+    padded[pad : pad + clean.shape[0], pad : pad + clean.shape[1]] = clean
+
+    big = Image.fromarray(255 - padded)
+    big = big.resize((big.width * 8, big.height * 8), Image.LANCZOS)
+
+    if DEBUG:
+        big.save(f"debug/{name}_isolated.png")
+
+    txt = pytesseract.image_to_string(big, config="--psm 7")
+    digits = re.findall(r"\d+", txt)
+    return int(digits[-1]) if digits else None
+
+
 TESSARACT_WHITELIST = "--psm 6 -c tessedit_char_whitelist={}"
 
 
@@ -630,12 +669,12 @@ def scan_all_kioku():
             click_name("cancel_save_button")
             pyautogui.sleep(SLEEP_MULT * 2)
             click_name("skill_tab")
-            special_level = get_nrs_in_img("special_level")
+            special_level = ocr_current_stat("special_level")
             if special_level == 0:
                 special_level = 10
             click_name("kioku_tab")
-            kioku_level = get_nrs_in_img("kioku_level")
-            magic_level = get_nrs_in_img("magic_level")
+            kioku_level = ocr_current_stat("kioku_level")
+            magic_level = ocr_current_stat("magic_level")
             ascension = sum(
                 not is_colour_around_button_purple(f"ascension_nr_{i}", icon_scale=0.2)[
                     0
@@ -661,7 +700,7 @@ def scan_all_kioku():
                 "ascension": ascension,
                 "kiokuLevel": kioku_level,
                 "magicLevel": magic_level,
-                "specialLevel": special_level,
+                "specialLvl": special_level,
                 "version": __version__,
             }
             save_result()
@@ -720,22 +759,22 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         int(client_top + 0.21 * client_height),
     )
     text_locations["kioku_level"] = (
-        int(client_left + 0.69 * client_width),
-        int(client_top + 0.33 * client_height),
-        int(client_left + 0.74 * client_width),
-        int(client_top + 0.38 * client_height),
+        int(client_left + 0.66 * client_width),
+        int(client_top + 0.335 * client_height),
+        int(client_left + 0.79 * client_width),
+        int(client_top + 0.375 * client_height),
     )
     text_locations["magic_level"] = (
-        int(client_left + 0.85 * client_width),
-        int(client_top + 0.44 * client_height),
-        int(client_left + 0.89 * client_width),
-        int(client_top + 0.49 * client_height),
+        int(client_left + 0.80 * client_width),
+        int(client_top + 0.445 * client_height),
+        int(client_left + 0.90 * client_width),
+        int(client_top + 0.485 * client_height),
     )
     text_locations["special_level"] = (
-        int(client_left + 0.89 * client_width),
-        int(client_top + 0.41 * client_height),
-        int(client_left + 0.905 * client_width),
-        int(client_top + 0.45 * client_height),
+        int(client_left + 0.85 * client_width),
+        int(client_top + 0.40 * client_height),
+        int(client_left + 0.90 * client_width),
+        int(client_top + 0.46 * client_height),
     )
     text_locations["crys_name_equipped_0"] = (
         int(client_left + 0.59 * client_width),
