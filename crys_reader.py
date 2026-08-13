@@ -334,11 +334,37 @@ def prepare_variants(img):
     ]
 
 
-def ocr_box(name):
+TESSARACT_WHITELIST = "--psm 6 -c tessedit_char_whitelist={}"
+
+
+def normalize_1_and_0(s: str) -> str:
+    return (
+        s.replace("i", "1")
+        .replace("I", "1")
+        .replace("l", "1")
+        .replace("]", "1")
+        .replace("[", "1")
+        .replace("O", "0")
+        .replace("o", "0")
+    )
+
+
+def get_nrs_in_img(name: str) -> int | None:
+    st = re.sub(
+        r"[^0-9]",
+        "",
+        normalize_1_and_0(
+            ocr_box(name, config=TESSARACT_WHITELIST.format("0oO123456789ilI"))
+        ),
+    )
+    return int(st) if st else None
+
+
+def ocr_box(name, config="--oem 3 --psm 6"):
     img = grab_region(text_locations[name])
     best = ""
     for variant, vname in prepare_variants(img):
-        txt = pytesseract.image_to_string(variant, config="--oem 3 --psm 6")
+        txt = pytesseract.image_to_string(variant, config=config)
         txt = re.sub(r"\\s+", " ", txt).strip()
         if len(txt) > len(best):
             best = txt
@@ -584,19 +610,34 @@ def scan_all_kioku():
                             result[kioku_name][crys_name_equipped] = read_sub_crys(True)
                     equip_order.append(eq_name)
             click_name("crys_return_button")
-            pyautogui.sleep(SLEEP_MULT * 4)
+            pyautogui.sleep(SLEEP_MULT * 2)
             click_name("cancel_save_button")
+            pyautogui.sleep(SLEEP_MULT * 2)
+            click_name("skill_tab")
+            special_level = get_nrs_in_img("special_level")
+            if special_level == 0:
+                special_level = 10
+            click_name("kioku_tab")
+            kioku_level = get_nrs_in_img("kioku_level")
+            magic_level = get_nrs_in_img("magic_level")
+            click_name("crys_tab")
             logger.info(
-                "For %s found %d crys, where %d have substats rolled",
+                "For %s found %d crys, where %d have substats rolled. Kioku lvl %s, Magic lvl %s, and Special lvl %s",
                 kioku_name,
                 len(result[kioku_name]),
                 sum(
                     1 if x is not None and len(x) else 0
                     for x in result[kioku_name].values()
                 ),
+                kioku_level,
+                magic_level,
+                special_level,
             )
             result[kioku_name]["meta"] = {
                 "equipOrder": equip_order,
+                "kiokuLevel": kioku_level,
+                "magicLevel": magic_level,
+                "specialLevel": special_level,
                 "version": __version__,
             }
             save_result()
@@ -654,6 +695,24 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         int(client_left + 0.95 * client_width),
         int(client_top + 0.21 * client_height),
     )
+    text_locations["kioku_level"] = (
+        int(client_left + 0.69 * client_width),
+        int(client_top + 0.33 * client_height),
+        int(client_left + 0.74 * client_width),
+        int(client_top + 0.38 * client_height),
+    )
+    text_locations["magic_level"] = (
+        int(client_left + 0.85 * client_width),
+        int(client_top + 0.44 * client_height),
+        int(client_left + 0.89 * client_width),
+        int(client_top + 0.49 * client_height),
+    )
+    text_locations["special_level"] = (
+        int(client_left + 0.89 * client_width),
+        int(client_top + 0.41 * client_height),
+        int(client_left + 0.905 * client_width),
+        int(client_top + 0.45 * client_height),
+    )
     text_locations["crys_name_equipped_0"] = (
         int(client_left + 0.59 * client_width),
         int(client_top + 0.18 * client_height),
@@ -673,6 +732,14 @@ def make_text_locations(client_left, client_top, client_width, client_height):
     )
     text_locations["crys_tab"] = (
         int(client_left + 0.90 * client_width),
+        int(client_top + 0.30 * client_height),
+    )
+    text_locations["skill_tab"] = (
+        int(client_left + 0.80 * client_width),
+        int(client_top + 0.30 * client_height),
+    )
+    text_locations["kioku_tab"] = (
+        int(client_left + 0.70 * client_width),
         int(client_top + 0.30 * client_height),
     )
     text_locations["scroll_location"] = (
