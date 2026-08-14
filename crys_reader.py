@@ -502,6 +502,8 @@ def read_sub_crys(is_currently_equipped: bool):
 def scan_all_unequipped_crys(has_crys_equipped: bool):
     x = y = 0
     crys = {}
+    if "no" in ocr_box("no_crys_available_box").lower():
+        return crys
     break_next = False
     while True:
         crys_pos = f"crys_nr_{x}_{y}"
@@ -776,6 +778,12 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         int(client_top + 0.40 * client_height),
         int(client_left + 0.90 * client_width),
         int(client_top + 0.46 * client_height),
+    )
+    text_locations["no_crys_available_box"] = (
+        int(client_left + 0.15 * client_width),
+        int(client_top + 0.45 * client_height),
+        int(client_left + 0.25 * client_width),
+        int(client_top + 0.50 * client_height),
     )
     text_locations["crys_name_equipped_0"] = (
         int(client_left + 0.59 * client_width),
