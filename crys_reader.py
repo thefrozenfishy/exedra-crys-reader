@@ -112,10 +112,10 @@ def check_git_version_match():
         logger.error("Failed to get git version")
 
 
-def fetch_last_styles():
+def fetch_last_file_version(file: str):
     try:
         style_response = get(
-            "https://raw.githubusercontent.com/thefrozenfishy/exedra-dmg-calc/refs/heads/main/src/assets/base_data/getStyleMstList.json",
+            f"https://raw.githubusercontent.com/thefrozenfishy/exedra-dmg-calc/refs/heads/main/src/assets/base_data/{file}.json",
             timeout=10,
         )
         style_response.raise_for_status()
@@ -123,7 +123,7 @@ def fetch_last_styles():
         return style_data
     except Exception:
         logger.exception("Failed to get git version")
-    with open(resource_path("getStyleMstList.json"), encoding="utf8") as f:
+    with open(resource_path(f"{file}.json"), encoding="utf8") as f:
         return json.load(f)["payload"]["mstList"]
 
 
@@ -430,6 +430,7 @@ def ocr_box(name, config="--oem 3 --psm 6"):
 
 def fuzzy_match(text, names):
     norm = normalize(text)
+    logger.debug("Checking %s", text)
     normalised = {normalize(x): x for x in names}
     for n, canonical in normalised.items():
         if n in norm:
@@ -518,6 +519,10 @@ def scan_all_unequipped_crys(has_crys_equipped: bool):
         click_name(crys_pos)
         scroll_down()
         for i in range(4 if has_crys_equipped else 0, -1, -1):
+            logger.debug(
+                "Reading %s",
+                f"crys_name_{'un' if has_crys_equipped else ''}equipped_{i}",
+            )
             name = fuzzy_match(
                 ocr_box(f"crys_name_{'un' if has_crys_equipped else ''}equipped_{i}"),
                 crys_names,
@@ -538,7 +543,8 @@ def scan_all_unequipped_crys(has_crys_equipped: bool):
             break_next = True
         if eq_idx != 0:
             # Reset to top of we click down so that we dont shuffle equips around forever
-            click_name(f"equipped_crys_0_pos")
+            click_name("equipped_crys_0_pos")
+        logger.debug("On %d,%d found %s", x, y, name)
     return crys
 
 
@@ -647,7 +653,9 @@ def scan_all_kioku():
             )
             click_name("crys_set_button")
             pyautogui.sleep(1 * SLEEP_MULT)
+            logger.debug("Found has_crys_equipped to be %s", has_crys_equipped)
             result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
+            logger.debug("Res is %s", json.dumps(result[kioku_name], indent=2))
 
             equip_order = []
             if has_crys_equipped:
@@ -708,7 +716,7 @@ def scan_all_kioku():
             }
             save_result()
         click_name("next_kioku_button")
-        pyautogui.sleep(1 * SLEEP_MULT)
+        pyautogui.sleep(5 * SLEEP_MULT)
 
 
 def setup_text_locations_mock():
@@ -970,20 +978,23 @@ if __name__ == "__main__":
     DPI_SCALE = get_dpi_scale()
     logger.debug("DPI scale factor detected: %.2f", DPI_SCALE)
 
-    style_names = [s["name"] for s in fetch_last_styles() if s["styleMstId"] > 10_000]
+    style_names = [
+        s["name"]
+        for s in fetch_last_file_version("getStyleMstList")
+        if s["styleMstId"] > 10_000
+    ]
     style_names = sorted(style_names, key=len, reverse=True)
     logger.debug("Loaded %d style names", len(style_names))
 
-    with open(resource_path("getSelectionAbilityMstList.json"), encoding="utf8") as f:
-        data = json.load(f)["payload"]["mstList"]
-        crys_names = {
-            s["name"]
-            for s in data
-            if s["selectionAbilityType"] == 1 and s["rarity"] > 2
-        }
-        crys_names = sorted(crys_names, key=len, reverse=True)
-        sub_crys_names = {s["name"] for s in data if s["selectionAbilityType"] == 2}
-        sub_crys_names = sorted(sub_crys_names, key=len, reverse=True)
+    crys_data = fetch_last_file_version("getSelectionAbilityMstList")
+    crys_names = {
+        s["name"]
+        for s in crys_data
+        if s["selectionAbilityType"] == 1 and s["rarity"] > 2
+    }
+    crys_names = sorted(crys_names, key=len, reverse=True)
+    sub_crys_names = {s["name"] for s in crys_data if s["selectionAbilityType"] == 2}
+    sub_crys_names = sorted(sub_crys_names, key=len, reverse=True)
 
     if not IS_WINDOWS and not MOCK_IMAGE:
         raise RuntimeError(
