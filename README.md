@@ -1,4 +1,4 @@
-# Crystalis Reader for Exedra
+# Account Reader for Madoka Exedra
 
 ## Requires
 
