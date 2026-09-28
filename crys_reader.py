@@ -37,6 +37,7 @@ __version__ = "vDEV"
 SLEEP_MULT = 1
 DEBUG = False
 AUTO_MODE = False
+SKIP_CRYS = False
 FILENAME = None
 TARGET_WINDOW = "MadokaExedra"
 MOCK_IMAGE = None
@@ -44,6 +45,11 @@ text_locations = {}
 result = {}
 RESULT_FILE = "my_crys.json"
 
+def ask_skip_crys() -> bool:
+    if AUTO_MODE:
+        return SKIP_CRYS
+    raw = input("Only read levels, skip crys? [y/N]: ").strip().lower()
+    return raw in ("y", "yes")
 
 def take_debug_screencap(title: str | None = None):
     if not DEBUG:
@@ -64,7 +70,7 @@ def take_debug_screencap(title: str | None = None):
             x = (x1 + x2) // 2
             y = (y1 + y2) // 2
             colour = "magenta"
-            draw.rectangle((x1, y1, x2, y2), outline=colour, width=5)
+            draw.rectangle((x1, y1, x2, y2), outline=colour, width=1)
         else:
             x, y = coords
             x -= client_left
@@ -632,6 +638,42 @@ def save_result():
 seen_this_run = set()
 
 
+def read_crys_for_kioku(kioku_name: str) -> list:
+    has_crys_equipped = (
+        fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
+    )
+    click_name("crys_set_button")
+    pyautogui.sleep(1 * SLEEP_MULT)
+    logger.debug("Found has_crys_equipped to be %s", has_crys_equipped)
+
+    result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
+    logger.debug("Res is %s", json.dumps(result[kioku_name], indent=2))
+
+    equip_order = []
+    if has_crys_equipped:
+        scroll_up()
+        for i in range(3):
+            crys_pos = f"equipped_crys_{i}_pos"
+            click_name(crys_pos)
+            is_purple, _ = is_colour_around_button_purple(
+                "equipped_icon", icon_scale=0.5
+            )
+            eq_name = None
+            if not is_purple:
+                crys_name_equipped = fuzzy_match(
+                    ocr_box("crys_name_equipped_0"), crys_names
+                )
+                if crys_name_equipped is not None:
+                    eq_name = crys_name_equipped
+                    result[kioku_name][crys_name_equipped] = read_sub_crys(True)
+            equip_order.append(eq_name)
+
+    click_name("crys_return_button")
+    pyautogui.sleep(SLEEP_MULT * 2)
+    click_name("cancel_save_button")
+    pyautogui.sleep(SLEEP_MULT * 2)
+    return equip_order
+
 def scan_all_kioku():
     click_name("crys_tab")
     scroll_up(20)
@@ -648,64 +690,39 @@ def scan_all_kioku():
         if kioku_name in result:
             logger.info("%s already exists in %s, skipping", kioku_name, RESULT_FILE)
         else:
-            has_crys_equipped = (
-                fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
-            )
-            click_name("crys_set_button")
-            pyautogui.sleep(1 * SLEEP_MULT)
-            logger.debug("Found has_crys_equipped to be %s", has_crys_equipped)
-            result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
-            logger.debug("Res is %s", json.dumps(result[kioku_name], indent=2))
+            if SKIP_CRYS:
+                result[kioku_name] = {}
+                equip_order = None
+            else:
+                equip_order = read_crys_for_kioku(kioku_name)
 
-            equip_order = []
-            if has_crys_equipped:
-                scroll_up()
-                for i in range(3):
-                    crys_pos = f"equipped_crys_{i}_pos"
-                    click_name(crys_pos)
-                    is_purple, _ = is_colour_around_button_purple(
-                        "equipped_icon", icon_scale=0.5
-                    )
-                    eq_name = None
-                    if not is_purple:
-                        crys_name_equipped = fuzzy_match(
-                            ocr_box("crys_name_equipped_0"), crys_names
-                        )
-                        if crys_name_equipped is not None:
-                            eq_name = crys_name_equipped
-                            result[kioku_name][crys_name_equipped] = read_sub_crys(True)
-                    equip_order.append(eq_name)
-            click_name("crys_return_button")
-            pyautogui.sleep(SLEEP_MULT * 2)
-            click_name("cancel_save_button")
-            pyautogui.sleep(SLEEP_MULT * 2)
             click_name("skill_tab")
             special_level = ocr_current_stat("special_level")
             if special_level == 0:
                 special_level = 10
+
             click_name("kioku_tab")
             kioku_level = ocr_current_stat("kioku_level")
             magic_level = ocr_current_stat("magic_level")
             ascension = sum(
-                not is_colour_around_button_purple(f"ascension_nr_{i}", icon_scale=0.2)[
-                    0
-                ]
+                not is_colour_around_button_purple(f"ascension_nr_{i}", icon_scale=0.2)[0]
                 for i in range(5)
             )
             click_name("crys_tab")
+
+            if not SKIP_CRYS:
+                logger.info(
+                    "For %s found %d crys, where %d have substats rolled.",
+                    kioku_name,
+                    len(result[kioku_name]),
+                    sum(1 if x is not None and len(x) else 0
+                        for x in result[kioku_name].values()),
+                )
             logger.info(
-                "For %s found %d crys, where %d have substats rolled. Ascension %s, Kioku lvl %s, Magic lvl %s, and Special lvl %s",
-                kioku_name,
-                len(result[kioku_name]),
-                sum(
-                    1 if x is not None and len(x) else 0
-                    for x in result[kioku_name].values()
-                ),
-                ascension,
-                kioku_level,
-                magic_level,
-                special_level,
+                "For %s: Ascension %s, Kioku lvl %s, Magic lvl %s, Special lvl %s",
+                kioku_name, ascension, kioku_level, magic_level, special_level,
             )
+
             result[kioku_name]["meta"] = {
                 "equipOrder": equip_order,
                 "ascension": ascension,
@@ -772,14 +789,14 @@ def make_text_locations(client_left, client_top, client_width, client_height):
     text_locations["kioku_level"] = (
         int(client_left + 0.66 * client_width),
         int(client_top + 0.335 * client_height),
-        int(client_left + 0.79 * client_width),
+        int(client_left + 0.74 * client_width),
         int(client_top + 0.375 * client_height),
     )
     text_locations["magic_level"] = (
-        int(client_left + 0.80 * client_width),
-        int(client_top + 0.445 * client_height),
+        int(client_left + 0.84 * client_width),
+        int(client_top + 0.46 * client_height),
         int(client_left + 0.90 * client_width),
-        int(client_top + 0.485 * client_height),
+        int(client_top + 0.50 * client_height),
     )
     text_locations["special_level"] = (
         int(client_left + 0.85 * client_width),
@@ -904,8 +921,8 @@ def make_text_locations(client_left, client_top, client_width, client_height):
     )
     for i in range(5):
         text_locations[f"ascension_nr_{i}"] = (
-            int(client_left + (0.658 + 0.026 * i) * client_width),
-            int(client_top + 0.471 * client_height),
+            int(client_left + (0.642 + 0.0244 * i) * client_width),
+            int(client_top + 0.488 * client_height),
         )
     text_locations["screen"] = (
         client_left,
@@ -918,7 +935,7 @@ def make_text_locations(client_left, client_top, client_width, client_height):
 
 
 def main():
-    global RESULT_FILE, result
+    global RESULT_FILE, result, SKIP_CRYS
     logger.info(
         """Reading all crys and subcrys, let the game be until this terminates naturally.
     There are potentially hundreds or thousands of crys based on your active filter,
@@ -931,6 +948,7 @@ def main():
     check_git_version_match()
     setup_text_locations()
     RESULT_FILE, result = choose_result_file()
+    SKIP_CRYS = ask_skip_crys()
     try:
         scan_all_kioku()
     except Exception as e:
@@ -948,11 +966,13 @@ if __name__ == "__main__":
     parser.add_argument("--mock-image")
     parser.add_argument("--auto", action="store_true")
     parser.add_argument("--filename")
+    parser.add_argument("--skip-crys", action="store_true")
 
     args = parser.parse_args()
 
     AUTO_MODE = args.auto
     FILENAME = args.filename
+    SKIP_CRYS = args.skip_crys
     if FILENAME and not FILENAME.endswith(".json"):
         FILENAME += ".json"
 
