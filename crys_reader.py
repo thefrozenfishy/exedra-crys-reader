@@ -407,6 +407,108 @@ def ocr_current_stat(
 
 TESSARACT_WHITELIST = "--psm 6 -c tessedit_char_whitelist={}"
 LEVEL_OCR_CONFIG = "--psm 8 -c tessedit_char_whitelist=0123456789"
+TARGET_DIGIT_HEIGHTS = (20, 22, 24, 26, 28, 30, 34)
+
+
+def ocr_level(
+    name,
+    brightness_thresh=190,
+    tall_frac=0.85,
+    gap_frac=0.4,
+    pad=20,
+):
+    """Read the big "current level" number from a "Lvl. 23 / 145" or "114 / 120" box.
+
+    The box may contain a "Lvl." prefix, the big number, a "/" and a smaller max
+    number, and the "/" can be dim or cut off. What always holds is that the
+    current number is the rightmost group of full-height glyphs: "L"/"l" of
+    "Lvl." are separated from it by a wide gap, and the "/" and the max number
+    are shorter than the big digits.
+    """
+    img = grab_region(text_locations[name]).convert("RGB")
+    arr = np.array(img)
+    mask = (arr.max(axis=2) >= brightness_thresh).astype(np.uint8) * 255
+
+    _, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+    comps = [tuple(int(v) for v in s) for s in stats[1:] if s[cv2.CC_STAT_AREA] >= 20]
+    if not comps:
+        return None
+    max_h = max(c[cv2.CC_STAT_HEIGHT] for c in comps)
+    tall = sorted(
+        (c for c in comps if c[cv2.CC_STAT_HEIGHT] >= tall_frac * max_h),
+        key=lambda c: c[cv2.CC_STAT_LEFT],
+    )
+
+    max_gap = gap_frac * max_h
+    group = [tall[-1]]
+    for c in reversed(tall[:-1]):
+        prev_left = group[0][cv2.CC_STAT_LEFT]
+        c_right = c[cv2.CC_STAT_LEFT] + c[cv2.CC_STAT_WIDTH]
+        if prev_left - c_right > max_gap:
+            break
+        group.insert(0, c)
+
+    left = group[0][cv2.CC_STAT_LEFT]
+    right = max(c[cv2.CC_STAT_LEFT] + c[cv2.CC_STAT_WIDTH] for c in group)
+    clean = mask[:, left:right]
+
+    padded = np.zeros(
+        (clean.shape[0] + 2 * pad, clean.shape[1] + 2 * pad), dtype=np.uint8
+    )
+    padded[pad : pad + clean.shape[0], pad : pad + clean.shape[1]] = clean
+
+    def _ocr(bin_img, psm, target_h):
+        """OCR a white-on-black glyph image, normalised to target_h px tall."""
+        scale = target_h / max_h
+        small = cv2.resize(
+            255 - bin_img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA
+        )
+        small = np.pad(small, 10, constant_values=255)
+        if DEBUG:
+            Image.fromarray(small).save(f"debug/{name}_isolated_{target_h}.png")
+        cfg = f"--psm {psm} -c tessedit_char_whitelist=0123456789"
+        return re.findall(
+            r"\d+", pytesseract.image_to_string(Image.fromarray(small), config=cfg)
+        )
+
+    # Tesseract is unreliable on isolated glyphs (a lone "0" or the "1"s of "114"
+    # can get dropped) and is sensitive to glyph size, so OCR a few normalised
+    # sizes and vote. We also know how many glyphs there are, so only votes with
+    # that many digits are trusted.
+    n_glyphs = len(group)
+    votes = {}
+    for target_h in TARGET_DIGIT_HEIGHTS:
+        for psm in (7, 8):
+            digits = _ocr(padded, psm, target_h)
+            if digits:
+                votes[digits[-1]] = votes.get(digits[-1], 0) + 1
+    matching = {k: v for k, v in votes.items() if len(k) == n_glyphs}
+    if matching:
+        return int(max(matching, key=matching.get))
+
+    # Fallback: OCR each glyph on its own (only valid if no glyphs are fused).
+    if all(c[cv2.CC_STAT_WIDTH] <= 0.9 * max_h for c in group):
+        glyphs = []
+        for c in group:
+            x, w = c[cv2.CC_STAT_LEFT], c[cv2.CC_STAT_WIDTH]
+            one = np.zeros((mask.shape[0] + 2 * pad, w + 2 * pad), dtype=np.uint8)
+            one[pad : pad + mask.shape[0], pad : pad + w] = mask[:, x : x + w]
+            single = {}
+            for target_h in TARGET_DIGIT_HEIGHTS:
+                for psm in (10, 8):
+                    d = _ocr(one, psm, target_h)
+                    if d and len(d[-1]) == 1:
+                        single[d[-1]] = single.get(d[-1], 0) + 1
+            if not single:
+                glyphs = []
+                break
+            glyphs.append(max(single, key=single.get))
+        if glyphs:
+            return int("".join(glyphs))
+
+    if not votes:
+        return None
+    return int(max(votes, key=votes.get))
 
 
 def normalize_1_and_0(s: str) -> str:
@@ -714,20 +816,8 @@ def scan_all_kioku():
                 special_level = 10
 
             click_name("kioku_tab")
-            # Only the number left of the "/" is wanted, so split glyph runs on the
-            # small gap between the number and the slash.
-            kioku_level = ocr_current_stat(
-                "kioku_level",
-                gap_frac=0.155,
-                min_gap=1,
-                ocr_config=LEVEL_OCR_CONFIG,
-            )
-            magic_level = ocr_current_stat(
-                "magic_level",
-                gap_frac=0.22,
-                min_gap=1,
-                ocr_config=LEVEL_OCR_CONFIG,
-            )
+            kioku_level = ocr_level("kioku_level")
+            magic_level = ocr_level("magic_level")
             ascension = sum(
                 not is_colour_around_button_purple(f"ascension_nr_{i}", icon_scale=0.2)[
                     0
