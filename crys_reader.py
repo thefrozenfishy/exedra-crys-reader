@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 import cv2
@@ -35,6 +36,10 @@ pyautogui.FAILSAFE = False
 __version__ = "vDEV"
 
 SLEEP_MULT = 1
+CLICK_DELAY = 1
+NEXT_KIOKU_POLL = 0.5
+NEXT_KIOKU_TIMEOUT = 10
+NEXT_KIOKU_SETTLE = 1
 DEBUG = False
 AUTO_MODE = False
 SKIP_CRYS = False
@@ -45,11 +50,13 @@ text_locations = {}
 result = {}
 RESULT_FILE = "my_crys.json"
 
+
 def ask_skip_crys() -> bool:
     if AUTO_MODE:
         return SKIP_CRYS
     raw = input("Only read levels, skip crys? [y/N]: ").strip().lower()
     return raw in ("y", "yes")
+
 
 def take_debug_screencap(title: str | None = None):
     if not DEBUG:
@@ -243,7 +250,7 @@ def scroll(clicks: int, x: int, y: int):
 
 
 def click_name(name):
-    pyautogui.sleep(SLEEP_MULT * 1)
+    pyautogui.sleep(SLEEP_MULT * CLICK_DELAY)
     click(*text_locations[name])
 
 
@@ -355,44 +362,112 @@ def prepare_variants(img):
     ]
 
 
-def ocr_current_stat(name, brightness_thresh=190, gap_frac=0.6, pad=8, blur_radius=2.5):
+DIGIT_CONFIG = "-c tessedit_char_whitelist=0123456789"
+# Tried in order; single-character PSMs (10/7) confuse this game's flat-top "3"
+# with "5", so word/line/sparse PSMs are tried first and are far more reliable.
+DIGIT_PSMS = (8, 13, 6, 7)
+DIGIT_SCALES = (4, 6, 8, 12)
+
+
+def _render_for_ocr(gray: np.ndarray, pad: int = 8, scale: int = 8, blur: float = 1.0):
+    """White-on-black uint8 glyph -> black-on-white, padded, upscaled, softened."""
+    padded = np.zeros(
+        (gray.shape[0] + 2 * pad, gray.shape[1] + 2 * pad), dtype=np.uint8
+    )
+    padded[pad : pad + gray.shape[0], pad : pad + gray.shape[1]] = gray
+    big = Image.fromarray(255 - padded)
+    big = big.resize((big.width * scale, big.height * scale), Image.LANCZOS)
+    return big.filter(ImageFilter.GaussianBlur(blur)) if blur else big
+
+
+def _ocr_single_digit(glyph_gray: np.ndarray) -> str | None:
+    for psm in DIGIT_PSMS:
+        for scale in DIGIT_SCALES:
+            img = _render_for_ocr(glyph_gray, scale=scale)
+            txt = pytesseract.image_to_string(img, config=f"--psm {psm} {DIGIT_CONFIG}")
+            digits = re.sub(r"\D", "", txt)
+            if len(digits) == 1:
+                return digits
+    return None
+
+
+BRIGHTNESS_THRESHOLDS = (190, 150, 170, 210, 225)
+
+
+def ocr_current_stat(name):
+    """Read the bright current value of a 'N / MAX' stat (e.g. 'Lvl. 143 / 145').
+
+    Tries a few brightness thresholds (screen scaling/AA can shift how the
+    bright "current" text separates from the dim "/ MAX" text). For each,
+    segments the crop into glyphs, drops the "/" separator and the dimmer max
+    value by shape/height, identifies each "1" by its narrow shape (Tesseract's
+    single-character mode misreads runs like '111', and even reads this font's
+    "3" as "5"), and OCRs the rest one glyph at a time.
+    """
     img = grab_region(text_locations[name]).convert("RGB")
-    arr = np.array(img)
+    mx = np.array(img).max(axis=2)
+    for brightness_thresh in BRIGHTNESS_THRESHOLDS:
+        digits = _ocr_stat_at_threshold(name, mx, brightness_thresh)
+        if digits is not None:
+            logger.debug(
+                "Read %s as %s (threshold %d)", name, digits, brightness_thresh
+            )
+            return int(digits)
+    return None
 
-    brightness = arr.max(axis=2)
-    mask = (brightness >= brightness_thresh).astype(np.uint8) * 255
 
-    cols = np.where(mask.any(axis=0))[0]
-    if len(cols) == 0:
+def _ocr_stat_at_threshold(name, mx: np.ndarray, brightness_thresh: int) -> str | None:
+    mask = ((mx >= brightness_thresh) * 255).astype(np.uint8)
+    if not mask.any():
         return None
 
-    runs = []
-    start = prev = cols[0]
-    gap = max(10, int(mask.shape[0] * gap_frac))
-    for c in cols[1:]:
-        if c - prev > gap:
-            runs.append((start, prev))
-            start = c
-        prev = c
-    runs.append((start, prev))
-    left, right = runs[0]
-    clean = mask[:, left : right + 1]
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    comps = []
+    for i in range(1, n):
+        x, y, w, h, _area = stats[i]
+        ys, xs = np.nonzero(labels == i)
+        # corr(x, y) is strongly negative for "/" (top-right to bottom-left)
+        # and small for every digit.
+        corr = 0.0
+        if len(xs) > 2 and xs.std() > 0 and ys.std() > 0:
+            corr = float(np.corrcoef(xs, ys)[0, 1])
+        comps.append({"x": int(x), "y": int(y), "w": int(w), "h": int(h), "corr": corr})
+    if not comps:
+        return None
 
-    padded = np.zeros(
-        (clean.shape[0] + 2 * pad, clean.shape[1] + 2 * pad), dtype=np.uint8
-    )
-    padded[pad : pad + clean.shape[0], pad : pad + clean.shape[1]] = clean
-
-    big = Image.fromarray(255 - padded)
-    big = big.resize((big.width * 8, big.height * 8), Image.LANCZOS)
-    big = big.filter(ImageFilter.GaussianBlur(blur_radius))
+    max_h = max(c["h"] for c in comps)
+    glyphs = [
+        c
+        for c in sorted(comps, key=lambda c: c["x"])
+        if c["h"] >= 0.75 * max_h  # drops ".", "," and the smaller-font "/ MAX"
+        and not (c["corr"] < -0.8 and c["w"] / c["h"] < 0.6)  # drops the "/"
+    ]
+    if not glyphs:
+        return None
 
     if DEBUG:
-        big.save(f"debug/{name}_isolated.png")
+        keep = np.zeros_like(mx)
+        for g in glyphs:
+            keep[g["y"] : g["y"] + g["h"], g["x"] : g["x"] + g["w"]] = mask[
+                g["y"] : g["y"] + g["h"], g["x"] : g["x"] + g["w"]
+            ]
+        _render_for_ocr(keep).save(f"debug/{name}_isolated.png")
 
-    txt = pytesseract.image_to_string(big, config="--psm 7")
-    digits = re.findall(r"\d+", txt)
-    return int(digits[-1]) if digits else None
+    digits = ""
+    for g in glyphs:
+        if g["w"] / g["h"] < 0.5:  # "1" is the only narrow digit in this font
+            digits += "1"
+            continue
+        glyph_gray = mx[
+            max(0, g["y"] - 1) : g["y"] + g["h"] + 1,
+            max(0, g["x"] - 1) : g["x"] + g["w"] + 1,
+        ]
+        digit = _ocr_single_digit(glyph_gray)
+        if digit is None:
+            return None
+        digits += digit
+
+    return digits
 
 
 TESSARACT_WHITELIST = "--psm 6 -c tessedit_char_whitelist={}"
@@ -674,6 +749,27 @@ def read_crys_for_kioku(kioku_name: str) -> list:
     pyautogui.sleep(SLEEP_MULT * 2)
     return equip_order
 
+
+def wait_for_new_kioku(prev_name: str | None) -> str | None:
+    """Poll until the kioku name on screen differs from prev_name.
+
+    Replaces a fixed multi-second sleep: returns as soon as the next character
+    has loaded, or None after NEXT_KIOKU_TIMEOUT (e.g. only one kioku exists).
+    """
+    if MOCK_IMAGE:
+        return None
+    deadline = time.monotonic() + NEXT_KIOKU_TIMEOUT * SLEEP_MULT
+    while True:
+        pyautogui.sleep(SLEEP_MULT * NEXT_KIOKU_POLL)
+        name = fuzzy_match(ocr_box("kioku_name"), style_names)
+        if name is not None and name != prev_name:
+            pyautogui.sleep(SLEEP_MULT * NEXT_KIOKU_SETTLE)
+            return name
+        if time.monotonic() >= deadline:
+            logger.warning("Timed out waiting for a new kioku after %s", prev_name)
+            return None
+
+
 def scan_all_kioku():
     click_name("crys_tab")
     scroll_up(20)
@@ -705,7 +801,9 @@ def scan_all_kioku():
             kioku_level = ocr_current_stat("kioku_level")
             magic_level = ocr_current_stat("magic_level")
             ascension = sum(
-                not is_colour_around_button_purple(f"ascension_nr_{i}", icon_scale=0.2)[0]
+                not is_colour_around_button_purple(f"ascension_nr_{i}", icon_scale=0.2)[
+                    0
+                ]
                 for i in range(5)
             )
             click_name("crys_tab")
@@ -715,12 +813,18 @@ def scan_all_kioku():
                     "For %s found %d crys, where %d have substats rolled.",
                     kioku_name,
                     len(result[kioku_name]),
-                    sum(1 if x is not None and len(x) else 0
-                        for x in result[kioku_name].values()),
+                    sum(
+                        1 if x is not None and len(x) else 0
+                        for x in result[kioku_name].values()
+                    ),
                 )
             logger.info(
                 "For %s: Ascension %s, Kioku lvl %s, Magic lvl %s, Special lvl %s",
-                kioku_name, ascension, kioku_level, magic_level, special_level,
+                kioku_name,
+                ascension,
+                kioku_level,
+                magic_level,
+                special_level,
             )
 
             result[kioku_name]["meta"] = {
@@ -733,7 +837,7 @@ def scan_all_kioku():
             }
             save_result()
         click_name("next_kioku_button")
-        pyautogui.sleep(5 * SLEEP_MULT)
+        wait_for_new_kioku(kioku_name)
 
 
 def setup_text_locations_mock():
@@ -787,7 +891,9 @@ def make_text_locations(client_left, client_top, client_width, client_height):
         int(client_top + 0.21 * client_height),
     )
     text_locations["kioku_level"] = (
-        int(client_left + 0.66 * client_width),
+        int(
+            client_left + 0.695 * client_width
+        ),  # just after "Lvl." (the "l" looks like a 1)
         int(client_top + 0.335 * client_height),
         int(client_left + 0.74 * client_width),
         int(client_top + 0.375 * client_height),
