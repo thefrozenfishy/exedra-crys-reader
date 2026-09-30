@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 import cv2
@@ -35,6 +36,11 @@ pyautogui.FAILSAFE = False
 __version__ = "vDEV"
 
 SLEEP_MULT = 1
+CLICK_DELAY = 1
+STANDARD_DELAY = 0.02
+NEXT_KIOKU_POLL = 0.5
+NEXT_KIOKU_TIMEOUT = 10
+NEXT_KIOKU_SETTLE = 1
 DEBUG = False
 AUTO_MODE = False
 SKIP_CRYS = False
@@ -227,7 +233,7 @@ def scroll(clicks: int, x: int, y: int):
         return
     prev_hwnd = win32gui.GetForegroundWindow()
     ctypes.windll.user32.SetForegroundWindow(hwnd)
-    pyautogui.sleep(SLEEP_MULT * 0.02)
+    pyautogui.sleep(SLEEP_MULT * STANDARD_DELAY)
     curr = pyautogui.position()
     pydirectinput.click(x, y)
 
@@ -240,12 +246,12 @@ def scroll(clicks: int, x: int, y: int):
         pyautogui.sleep(SLEEP_MULT * 0.1)
 
     pyautogui.moveTo(curr)
-    pyautogui.sleep(SLEEP_MULT * 0.02)
+    pyautogui.sleep(SLEEP_MULT * STANDARD_DELAY)
     ctypes.windll.user32.SetForegroundWindow(prev_hwnd)
 
 
 def click_name(name):
-    pyautogui.sleep(SLEEP_MULT * 1)
+    pyautogui.sleep(SLEEP_MULT * CLICK_DELAY)
     click(*text_locations[name])
 
 
@@ -264,11 +270,11 @@ def click(x, y):
     err = ctypes.get_last_error()
     if err:
         logger.warning("SetForegroundWindow result=%s err=%s", result, err)
-    pyautogui.sleep(SLEEP_MULT * 0.02)
+    pyautogui.sleep(SLEEP_MULT * STANDARD_DELAY)
     curr = pyautogui.position()
     pydirectinput.click(int(x), int(y))
     pyautogui.moveTo(curr)
-    pyautogui.sleep(SLEEP_MULT * 0.02)
+    pyautogui.sleep(SLEEP_MULT * STANDARD_DELAY)
     if prev_hwnd and win32gui.IsWindow(prev_hwnd):
         ctypes.windll.user32.SetForegroundWindow(prev_hwnd)
     else:
@@ -405,7 +411,7 @@ def ocr_current_stat(
     return int(digits[-1]) if digits else None
 
 
-TESSARACT_WHITELIST = "--psm 6 -c tessedit_char_whitelist={}"
+TESSERACT_WHITELIST = "--psm 6 -c tessedit_char_whitelist={}"
 LEVEL_OCR_CONFIG = "--psm 8 -c tessedit_char_whitelist=0123456789"
 TARGET_DIGIT_HEIGHTS = (20, 22, 24, 26, 28, 30, 34)
 
@@ -528,7 +534,7 @@ def get_nrs_in_img(name: str) -> int | None:
         r"[^0-9]",
         "",
         normalize_1_and_0(
-            ocr_box(name, config=TESSARACT_WHITELIST.format("0oO123456789ilI"))
+            ocr_box(name, config=TESSERACT_WHITELIST.format("0oO123456789ilI"))
         ),
     )
     return int(st) if st else None
@@ -756,7 +762,7 @@ def read_crys_for_kioku(kioku_name: str) -> list:
         fuzzy_match(ocr_box("topside_crys_0_name"), crys_names) is not None
     )
     click_name("crys_set_button")
-    pyautogui.sleep(1 * SLEEP_MULT)
+    pyautogui.sleep(SLEEP_MULT * CLICK_DELAY)
     logger.debug("Found has_crys_equipped to be %s", has_crys_equipped)
 
     result[kioku_name] = scan_all_unequipped_crys(has_crys_equipped)
@@ -786,6 +792,26 @@ def read_crys_for_kioku(kioku_name: str) -> list:
     click_name("cancel_save_button")
     pyautogui.sleep(SLEEP_MULT * 2)
     return equip_order
+
+
+def wait_for_new_kioku(prev_name: str | None) -> str | None:
+    """Poll until the kioku name on screen differs from prev_name.
+
+    Replaces a fixed multi-second sleep: returns as soon as the next character
+    has loaded, or None after NEXT_KIOKU_TIMEOUT (e.g. only one kioku exists).
+    """
+    if MOCK_IMAGE:
+        return None
+    deadline = time.monotonic() + NEXT_KIOKU_TIMEOUT * SLEEP_MULT
+    while True:
+        pyautogui.sleep(SLEEP_MULT * NEXT_KIOKU_POLL)
+        name = fuzzy_match(ocr_box("kioku_name"), style_names)
+        if name is not None and name != prev_name:
+            pyautogui.sleep(SLEEP_MULT * NEXT_KIOKU_SETTLE)
+            return name
+        if time.monotonic() >= deadline:
+            logger.warning("Timed out waiting for a new kioku after %s", prev_name)
+            return None
 
 
 def scan_all_kioku():
@@ -855,7 +881,7 @@ def scan_all_kioku():
             }
             save_result()
         click_name("next_kioku_button")
-        pyautogui.sleep(5 * SLEEP_MULT)
+        wait_for_new_kioku(kioku_name)
 
 
 def setup_text_locations_mock():
@@ -1142,5 +1168,11 @@ if __name__ == "__main__":
         raise RuntimeError(
             "On macOS/Linux you must provide " "--mock-image screenshot.png"
         )
-
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.exception("An error occured", exc_info=e)
+        input(
+            "An error occured. If Tesseract is mentioned reinstall it and restart your computer\nPress enter to end."
+        )
+        raise e
