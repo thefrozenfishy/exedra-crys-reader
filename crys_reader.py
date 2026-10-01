@@ -817,11 +817,15 @@ def wait_for_new_kioku(prev_name: str | None) -> str | None:
 def scan_all_kioku():
     click_name("crys_tab")
     scroll_up(20)
+    fail_count = 0
     while True:
         kioku_name = fuzzy_match(ocr_box("kioku_name"), style_names)
         logger.debug("Reading %s", kioku_name)
         if kioku_name is None:
+            if fail_count > 10:
+                return
             logger.error("Could not read kioku name %s", ocr_box("kioku_name"))
+            fail_count += 1
             continue
         if kioku_name in seen_this_run:
             logger.info("Came back to %s, terminating", kioku_name)
